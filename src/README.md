@@ -26,3 +26,13 @@
 - Reusable factor presets and library loading now live in `src/fsrc_sindy/factors/repository.py`.
 - The research loop now contains identify-mode preanalysis, task-level validation gating, and theory-aware evidence synthesis rather than only flat benchmark aggregation.
 
+## Fast-Slow Theory Update
+
+- `src/fsrc_sindy/benchmarks.py` now exposes `fastslow_smoke` and `fastslow_theory` suites for multiscale validation.
+- `src/fsrc_sindy/factors/feature_engine.py` now computes theory-grounded fast/slow observables such as `slow_level_norm`, `timescale_separation`, `slow_manifold_alignment`, `adiabatic_coherence`, and `closure_stress`.
+- `src/fsrc_sindy/research/fastslow_validation.py` now wraps the general research loop with a dedicated fast/slow evidence report.
+
+## Notebook Demo Support
+
+- `src/fsrc_sindy/research/demo.py` provides notebook-facing helpers that reuse validation runs, build dashboard tables, and summarize theory evidence conservatively.
+- The current slow-fast review notebook is `notebooks/sf/classic_sparse_sf_demo.ipynb`, which can reuse `fastslow_theory` and `fastslow_sparse_theory` artifacts when they already exist.

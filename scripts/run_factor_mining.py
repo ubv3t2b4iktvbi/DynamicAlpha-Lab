@@ -16,7 +16,7 @@ from fsrc_sindy.pipeline import run_factor_mining_suite
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run RC-based automatic dynamical factor mining.")
-    parser.add_argument("--suite", type=str, default="smoke", choices=["smoke", "common", "hard", "highdim", "highdim_theory", "all", "research"])
+    parser.add_argument("--suite", type=str, default="smoke", choices=["smoke", "common", "hard", "fastslow_smoke", "fastslow_theory", "fastslow_sparse_theory", "highdim", "highdim_theory", "all", "research"])
     parser.add_argument("--out_dir", type=str, default="runs/factor_mining/smoke")
     parser.add_argument("--seed", type=int, default=None, help="Optional seed override. Defaults to factor_mining.random_seed from config, else 123.")
     parser.add_argument("--mode", type=str, default=None, choices=["accumulate", "identify"], help="Optional mining mode override.")

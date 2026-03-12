@@ -19,6 +19,10 @@ class _State:
     energy_long: float
     susceptibility: float
     susceptibility_long: float
+    positive_impulse: float
+    negative_impulse: float
+    band_high: float
+    band_low: float
     prev_y: float
     prev2_y: float
     prev_fast: float
@@ -87,6 +91,10 @@ class DynamicsFeatureEngine:
             energy_long=0.0,
             susceptibility=0.0,
             susceptibility_long=0.0,
+            positive_impulse=0.0,
+            negative_impulse=0.0,
+            band_high=y0,
+            band_low=y0,
             prev_y=y0,
             prev2_y=y0,
             prev_fast=y0,
@@ -130,6 +138,21 @@ class DynamicsFeatureEngine:
         energy_release = energy_ratio * self._relu(dm_norm)
         shock_recovery = self._relu(-dy / scale) * self._relu(dm_norm)
         trend_persistence = float(abs(slow_drift_norm) / max(abs(dm_norm) + self.cfg.eps, self.cfg.eps))
+        slow_level_norm = float(slow / max(scale_long, self.cfg.eps))
+        fast_level_norm = float(fast / max(scale, self.cfg.eps))
+        timescale_ratio = float(abs(fast_drift_norm) / max(abs(slow_drift_norm), self.cfg.eps))
+        timescale_separation = float(np.log1p(timescale_ratio))
+        slow_manifold_alignment = float(1.0 / (1.0 + abs(resid_norm) + abs(dm_norm)))
+        adiabatic_coherence = float(collapse_quality * slow_manifold_alignment)
+        closure_stress = float(abs(dm_norm) * energy_ratio / max(collapse_quality, self.cfg.eps))
+        total_impulse = float(max(state.positive_impulse + state.negative_impulse, self.cfg.eps))
+        positive_impulse_share = float(state.positive_impulse / total_impulse)
+        impulse_balance = float((state.positive_impulse - state.negative_impulse) / total_impulse)
+        band_width = float(max(state.band_high - state.band_low, self.cfg.eps))
+        band_position = float(np.clip((y - state.band_low) / band_width, 0.0, 1.0))
+        trend_regression_quality = float(
+            collapse_quality / (1.0 + abs(resid_norm) + abs(fast_drift_norm - slow_drift_norm))
+        )
         return {
             "y": y,
             "dy": dy,
@@ -167,6 +190,16 @@ class DynamicsFeatureEngine:
             "energy_release": energy_release,
             "shock_recovery": shock_recovery,
             "trend_persistence": trend_persistence,
+            "slow_level_norm": slow_level_norm,
+            "fast_level_norm": fast_level_norm,
+            "timescale_separation": timescale_separation,
+            "slow_manifold_alignment": slow_manifold_alignment,
+            "adiabatic_coherence": adiabatic_coherence,
+            "closure_stress": closure_stress,
+            "positive_impulse_share": positive_impulse_share,
+            "impulse_balance": impulse_balance,
+            "band_position": band_position,
+            "trend_regression_quality": trend_regression_quality,
             "time_index": float(state.time_index),
         }
 
@@ -189,6 +222,10 @@ class DynamicsFeatureEngine:
         scale_long = self._ema(state.scale_long, abs(resid) + self.cfg.eps, self.scale_long_alpha)
         energy = self._ema(state.energy, dy * dy, self.energy_alpha)
         energy_long = self._ema(state.energy_long, dy * dy, self.energy_long_alpha)
+        positive_impulse = self._ema(state.positive_impulse, self._relu(dy), self.energy_alpha)
+        negative_impulse = self._ema(state.negative_impulse, self._relu(-dy), self.energy_alpha)
+        band_high = max(y_new, self._ema(state.band_high, y_new, self.fast_alpha))
+        band_low = min(y_new, self._ema(state.band_low, y_new, self.fast_alpha))
         m = float(fast - slow)
         dm = float(m - prev_m)
         susceptibility = self._ema(state.susceptibility, abs(dm), self.sus_alpha)
@@ -209,6 +246,10 @@ class DynamicsFeatureEngine:
         state.energy_long = energy_long
         state.susceptibility = susceptibility
         state.susceptibility_long = susceptibility_long
+        state.positive_impulse = positive_impulse
+        state.negative_impulse = negative_impulse
+        state.band_high = band_high
+        state.band_low = band_low
         state.time_index += 1
         return self._context_from_state(state)
 

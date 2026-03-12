@@ -114,3 +114,15 @@
 - `factors/readout.py` provides the shared causal readout encoder for mined factors and legacy fast/slow readout features.
 - `factors/repository.py` provides reusable factor presets, a central registry, and selected-library loading helpers.
 - `research/loop.py` now includes identify-mode preanalysis, validation gating, theory-aware evidence synthesis, autonomous theory-research summaries, and source-guided quant-factor update plans.
+
+## Fast-Slow Validation Additions
+
+- `benchmarks.py` now contains `fastslow_smoke` and `fastslow_theory` suites that focus on multiscale systems instead of mixing in non-multiscale tasks.
+- `factors/feature_engine.py` and `factors/factor_bank.py` now expose slow-manifold and adiabatic observables for factor mining and readout validation.
+- `research/coordinate_analysis.py` now accepts the `theory_fastslow` coordinate family.
+- `research/fastslow_validation.py` adds a thin orchestration layer that writes `fastslow_validation_report.md` and `fastslow_validation_summary.json`.
+
+## Notebook Demo Helpers
+
+- `research/demo.py` adds reusable helpers for notebook orchestration, artifact reuse, factor-frequency summaries, benchmark tables, and cautious theory-evidence grading.
+- The paired notebook path is `notebooks/sf/classic_sparse_sf_demo.ipynb`, with notebook-owned reruns grouped under `runs/demo_notebook/sf/`.

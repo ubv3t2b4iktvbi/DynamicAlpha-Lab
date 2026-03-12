@@ -13,7 +13,7 @@ from fsrc_sindy.selection import DEFAULT_MODEL_NAMES, LEGACY_MODEL_NAMES, MODEL_
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run fast-slow + RC + SINDy benchmark suites.")
-    parser.add_argument("--suite", type=str, default="smoke", choices=["smoke", "common", "hard", "highdim", "highdim_theory", "all", "research"])
+    parser.add_argument("--suite", type=str, default="smoke", choices=["smoke", "common", "hard", "fastslow_smoke", "fastslow_theory", "fastslow_sparse_theory", "highdim", "highdim_theory", "all", "research"])
     parser.add_argument("--out_dir", type=str, default="./runs/smoke")
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--grid_mode", type=str, default="quick", choices=["quick", "full"])

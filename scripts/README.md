@@ -85,3 +85,18 @@ python scripts/skill_inventory_report.py --json-out runs/skill_inventory/report.
 ```
 
 This script is intended for skill maintenance and repository hygiene, not for the main dynamics research loop.
+
+## Fast-Slow Validation Update
+
+Use `run_fastslow_validation.py` for a theory-focused fast/slow experiment loop that bundles:
+
+- curated `fastslow_smoke` / `fastslow_theory` suites
+- `raw / delay / fastslow / theory_fastslow / factor` coordinate diagnostics
+- factor mining with the dedicated `configs/fastslow_theory_factor_mining.yaml` preset
+- a compact `fastslow_validation_report.md` plus `fastslow_validation_summary.json`
+
+Example:
+
+```bash
+python scripts/run_fastslow_validation.py --suite fastslow_smoke --out_dir runs/fastslow_validation/fastslow_smoke
+```

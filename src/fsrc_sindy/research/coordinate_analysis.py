@@ -83,6 +83,29 @@ def _build_factor_coordinate(y: np.ndarray) -> CoordinateSequence:
     )
 
 
+def _build_theory_fastslow_coordinate(y: np.ndarray) -> CoordinateSequence:
+    engine = DynamicsFeatureEngine(DynamicsFeatureConfig())
+    ctx = engine.build_base_sequence(y)
+    columns = (
+        "slow_level_norm",
+        "slow_drift_norm",
+        "timescale_separation",
+        "slow_manifold_alignment",
+        "adiabatic_coherence",
+    )
+    values = np.column_stack([ctx[name] for name in columns])
+    return CoordinateSequence(
+        name="theory_fastslow",
+        values=np.asarray(values, dtype=float),
+        columns=columns,
+        offset=0,
+        notes=(
+            "Theory-grounded fast/slow coordinate built from a slow-mode proxy, "
+            "local timescale separation, slow-manifold alignment, and adiabatic coherence."
+        ),
+    )
+
+
 def build_coordinate_sequences(y: np.ndarray, n_train: int, dt: float, coordinate_kinds: Sequence[str], delay_dim: int) -> list[CoordinateSequence]:
     y_std = _standardize_by_train(y, n_train=n_train)
     builders = {
@@ -95,6 +118,7 @@ def build_coordinate_sequences(y: np.ndarray, n_train: int, dt: float, coordinat
         ),
         "delay": lambda: _build_delay_embedding(y_std, delay_dim=delay_dim),
         "fastslow": lambda: _build_fastslow_coordinate(y_std, dt=dt),
+        "theory_fastslow": lambda: _build_theory_fastslow_coordinate(y_std),
         "factor": lambda: _build_factor_coordinate(y_std),
     }
     sequences: list[CoordinateSequence] = []
@@ -448,6 +472,10 @@ def render_coordinate_report(task: BenchmarkTask, df: pd.DataFrame) -> str:
         fs_row = ordered[ordered["coordinate"] == "fastslow"].iloc[0]
         if float(fs_row.get("offdiag_mi_mean", np.inf)) < 0.1 and float(fs_row.get("spectral_radius_corr", -np.inf)) < 0.2:
             lines.append("- Fast-slow coordinates appear to decouple dynamics while distorting local geometry; retune timescales or learn slow coordinates rather than fixing them.")
+    if "theory_fastslow" in ordered["coordinate"].tolist():
+        theory_row = ordered[ordered["coordinate"] == "theory_fastslow"].iloc[0]
+        if float(theory_row.get("koopman_invariance_score", -np.inf)) >= 0.7 and float(theory_row.get("markov_gain_ratio", np.inf)) <= 0.1:
+            lines.append("- Theory fast-slow coordinates are simultaneously close to Markov and Koopman-like; use them to guide factor selection and structured residual follow-up.")
     return "\n".join(lines)
 
 

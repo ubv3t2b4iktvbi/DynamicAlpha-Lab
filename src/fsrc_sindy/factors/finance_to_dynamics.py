@@ -2,49 +2,73 @@ from __future__ import annotations
 
 TRANSLATION_TABLE = [
     {
-        "finance_pattern": "均线金叉 / 白线上穿黄线",
-        "dynamics_object": "快慢流形序参量 m 与其符号翻转",
+        "finance_pattern": "Moving-average crosses / trend turn",
+        "dynamics_object": "Fast-slow order parameter and sign flips",
         "project_feature": "slow_fast_gap, positive_gap",
-        "mechanism_note": "快流形脱离慢流形，说明系统可能进入新相或新吸引子邻域。",
+        "mechanism_note": "A fast branch leaving the slow manifold is treated as a phase or attractor departure rather than a literal MA crossover.",
     },
     {
-        "finance_pattern": "KDJ 低位 / 最后一次回调",
-        "dynamics_object": "相位谷底上拐证据",
+        "finance_pattern": "KDJ low zone / last pullback",
+        "dynamics_object": "Phase-bottom recovery evidence",
         "project_feature": "phase_bottom_score, support_recovery",
-        "mechanism_note": "在负残差区出现正相位推进，常对应回调末端与相位提前。",
+        "mechanism_note": "Negative residual plus positive phase advance becomes causal evidence for a recovery from the lower side of a cycle.",
     },
     {
-        "finance_pattern": "放量异动 / 主力入场",
-        "dynamics_object": "控制参量增强与能量注入",
+        "finance_pattern": "Volume burst / capital entry",
+        "dynamics_object": "Control-energy injection",
         "project_feature": "energy_ratio, energy_release",
-        "mechanism_note": "创新功率或局部动能相对背景显著抬升。",
+        "mechanism_note": "Abnormal participation is translated into elevated local energy or control pressure in the observed dynamics.",
     },
     {
-        "finance_pattern": "主力成本区 / 多空线",
-        "dynamics_object": "慢流形或慢参考轨道",
-        "project_feature": "slow, trend_persistence",
-        "mechanism_note": "慢变量刻画长期约束或低频支撑/阻尼。",
+        "finance_pattern": "Cost zone / dominant trend track",
+        "dynamics_object": "Slow manifold or slow reference orbit",
+        "project_feature": "slow_level_norm, trend_persistence",
+        "mechanism_note": "What finance calls a cost zone becomes a slow coordinate that constrains long-horizon drift.",
     },
     {
-        "finance_pattern": "多周期共振 / 主曲线质量",
-        "dynamics_object": "多尺度塌缩一致性",
+        "finance_pattern": "Multi-window resonance / curve quality",
+        "dynamics_object": "Multiscale collapse consistency",
         "project_feature": "collapse_quality, critical_collapse_gate",
-        "mechanism_note": "不同尺度的无量纲变量在同一主曲线附近，说明 coarse-graining 更稳定。",
+        "mechanism_note": "Agreement across windows is restated as stable coarse-graining and better collapsed coordinates.",
     },
     {
-        "finance_pattern": "预期差 / 关键K 管理区间",
-        "dynamics_object": "物理识别残差与机制切换证据",
+        "finance_pattern": "Model surprise / key management zone",
+        "dynamics_object": "Physics-identifier mismatch",
         "project_feature": "physics_drift_surprise, physics_phase_gate",
-        "mechanism_note": "当识别器预测与真实漂移偏离时，可能发生机制切换或未知驱动注入。",
+        "mechanism_note": "Forecast mismatch is treated as mechanism-switch evidence instead of a market-only expectation gap.",
+    },
+    {
+        "finance_pattern": "QuantaAlpha RSQR / MA / VMA seeds",
+        "dynamics_object": "Locally coherent drift quality",
+        "project_feature": "trend_regression_quality, trend_energy_resonance",
+        "mechanism_note": "Trend-stability seeds are translated into causal trend-fit quality and then gated by control energy when persistence needs support.",
+    },
+    {
+        "finance_pattern": "QuantaAlpha CORR / CORD / WVMA price-volume resonance",
+        "dynamics_object": "Drift-energy alignment",
+        "project_feature": "drift_energy_alignment, trend_energy_resonance",
+        "mechanism_note": "Price-volume resonance becomes alignment between directional drift and the signed impulse or energy carried by the local dynamics.",
+    },
+    {
+        "finance_pattern": "QuantaAlpha VSUMP / VSUMD directional flow imbalance",
+        "dynamics_object": "Signed impulse imbalance",
+        "project_feature": "positive_impulse_share, impulse_balance, flow_supported_breakout",
+        "mechanism_note": "Up-minus-down flow is restated as the share and balance of positive versus negative signed impulse in a causal window.",
+    },
+    {
+        "finance_pattern": "QuantaAlpha RSV / MAX / MIN window position",
+        "dynamics_object": "Relative band position",
+        "project_feature": "band_position, imbalance_recovery_gate",
+        "mechanism_note": "Relative location inside a recent price range becomes a causal local-band coordinate for recovery or breakout timing.",
     },
 ]
 
 
 def translation_markdown() -> str:
     lines = [
-        "# 金融因子到动力学因子的翻译表",
+        "# Finance-to-Dynamics Translation Table",
         "",
-        "| 金融语义 | 动力学对象 | 项目内因子 | 机制说明 |",
+        "| Finance motif | Dynamics object | Project factor(s) | Mechanism note |",
         "|---|---|---|---|",
     ]
     for row in TRANSLATION_TABLE:

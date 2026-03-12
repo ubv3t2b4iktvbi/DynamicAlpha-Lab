@@ -20,6 +20,9 @@ from ..utils import ensure_dir
 from .coordinate_analysis import run_coordinate_analysis_suite
 
 
+FASTSLOW_COORDINATE_NAMES = frozenset({"fastslow", "theory_fastslow"})
+
+
 def _load_factor_config(path: str | None) -> tuple[dict, dict, dict]:
     if path is None:
         return {}, {}, {}
@@ -30,6 +33,21 @@ def _load_factor_config(path: str | None) -> tuple[dict, dict, dict]:
         dict(payload.get("rc", {})),
         dict(payload.get("features", {})),
     )
+
+
+def _is_fastslow_coordinate_name(name: object) -> bool:
+    return str(name) in FASTSLOW_COORDINATE_NAMES
+
+
+def _fastslow_family_score(row: pd.Series) -> float:
+    markov_quality = min(max(1.0 - max(float(row.get("markov_gain_ratio", np.inf)), 0.0), 0.0), 1.0)
+    spectral_quality = (
+        0.4 * min(max(float(row.get("spectral_radius_corr", 0.0)), 0.0), 1.0)
+        + 0.35 * min(max(1.0 - float(row.get("spectral_radius_rmse", 1.0)), 0.0), 1.0)
+        + 0.25 * min(max(float(row.get("koopman_invariance_score", 0.0)), 0.0), 1.0)
+    )
+    koopman_quality = min(max(float(row.get("koopman_invariance_score", 0.0)), 0.0), 1.0)
+    return float(0.4 * markov_quality + 0.35 * spectral_quality + 0.25 * koopman_quality)
 
 
 @dataclass(frozen=True)
@@ -107,7 +125,7 @@ def _preanalysis_for_tasks(
         profile = profile_obj.to_dict()
         allow_fastslow, reason = _should_probe_fastslow(profile)
         recommended_coordinates = tuple(
-            kind for kind in coordinate_kinds if kind != "fastslow" or allow_fastslow
+            kind for kind in coordinate_kinds if allow_fastslow or not _is_fastslow_coordinate_name(kind)
         )
         task_coordinate_kinds[task.name] = recommended_coordinates
         task_reasons[task.name] = reason
@@ -231,7 +249,7 @@ def _fastslow_validation_gate(
     non_fastslow_models = tuple(
         model_name for model_name in requested_models if not get_model_spec(model_name).uses_fastslow
     )
-    fastslow_row_df = coordinate_task_df[coordinate_task_df["coordinate"] == "fastslow"]
+    fastslow_row_df = coordinate_task_df[coordinate_task_df["coordinate"].isin(FASTSLOW_COORDINATE_NAMES)].copy()
     if fastslow_row_df.empty:
         reason = preanalysis_reason
         evidence = "fast/slow was not even promoted to coordinate analysis, so fast/slow validation models are skipped."
@@ -249,12 +267,17 @@ def _fastslow_validation_gate(
     ordered_closure = coordinate_task_df.sort_values("markov_gain_ratio", na_position="last").reset_index(drop=True)
     ordered_spectral = coordinate_task_df.sort_values("spectral_radius_rmse", na_position="last").reset_index(drop=True)
     ordered_koopman = coordinate_task_df.sort_values("koopman_invariance_score", ascending=False, na_position="last").reset_index(drop=True)
-    fastslow_row = fastslow_row_df.iloc[0]
+    fastslow_row_df["fastslow_family_score"] = fastslow_row_df.apply(_fastslow_family_score, axis=1)
+    fastslow_row = fastslow_row_df.sort_values(
+        ["fastslow_family_score", "markov_gain_ratio", "spectral_radius_rmse", "koopman_invariance_score"],
+        ascending=[False, True, True, False],
+        na_position="last",
+    ).iloc[0]
     best_closure = ordered_closure.iloc[0]
     best_spectral = ordered_spectral.iloc[0]
     best_koopman = ordered_koopman.iloc[0]
     wins_any = any(
-        row["coordinate"] == "fastslow"
+        _is_fastslow_coordinate_name(row["coordinate"])
         for row in (best_closure, best_spectral, best_koopman)
     )
     near_best_closure = float(fastslow_row.get("markov_gain_ratio", np.inf)) <= float(best_closure.get("markov_gain_ratio", np.inf)) + 0.05
@@ -289,7 +312,8 @@ def _fastslow_validation_gate(
         f"best_spectral={best_spectral['coordinate']} (spectral_rmse={best_spectral.get('spectral_radius_rmse', float('nan')):.4g}, "
         f"corr={best_spectral.get('spectral_radius_corr', float('nan')):.4g}); "
         f"best_koopman={best_koopman['coordinate']} (koopman_score={best_koopman.get('koopman_invariance_score', float('nan')):.4g}); "
-        f"fastslow=(markov_gain_ratio={fastslow_row.get('markov_gain_ratio', float('nan')):.4g}, "
+        f"fastslow_family={fastslow_row.get('coordinate', 'fastslow')} "
+        f"(markov_gain_ratio={fastslow_row.get('markov_gain_ratio', float('nan')):.4g}, "
         f"spectral_rmse={fastslow_row.get('spectral_radius_rmse', float('nan')):.4g}, "
         f"spectral_corr={fastslow_row.get('spectral_radius_corr', float('nan')):.4g}, "
         f"koopman_score={fastslow_row.get('koopman_invariance_score', float('nan')):.4g})"
@@ -635,7 +659,7 @@ def _task_bottleneck(
         return "memory or closure terms are still missing from the state representation"
     if gate_decision is not None and gate_decision.fastslow_coordinate_hypothesis and not gate_decision.fastslow_validation_allowed:
         return "hand-crafted fast/slow structure looks plausible in raw signals but is not surviving coordinate validation"
-    if spectral_row is not None and str(spectral_row.get("coordinate", "")) == "fastslow":
+    if spectral_row is not None and _is_fastslow_coordinate_name(spectral_row.get("coordinate", "")):
         return "timescale separation may help geometry locally, but it is not yet the dominant closure representation"
     if factor_row is not None and benchmark_row is not None and "factor_readout" in str(benchmark_row.get("variant", "")):
         return "translated factors are informative, but they still need broader validation before promotion"

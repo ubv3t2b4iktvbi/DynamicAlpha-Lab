@@ -352,6 +352,7 @@ python scripts/run_research_loop.py --suite smoke --tasks vanderpol_smoke --out_
 - `physics-identifier-swapper`
 - `dynamical-theory-reasoner`
 - `closed-loop-factor-orchestrator`
+- `parallel-workflow-planner`
 
 这些 skill 不是用户文档，而是给 AI 代理用的工作流程提示。详细触发方式见顶层 [AGENTS.md](/C:/Users/12345/Desktop/DynamicAlpha-Lab/AGENTS.md)。
 
@@ -408,4 +409,26 @@ pip install -r requirements.txt
 - The factor and readout stack now has a reusable causal readout layer in `src/fsrc_sindy/factors/readout.py` plus a reusable factor registry in `src/fsrc_sindy/factors/repository.py`. This lets RC and NGRC-family models share the same fast/slow or factor-based readout features instead of duplicating bespoke logic.
 - `src/fsrc_sindy/research/loop.py` now adds an identify-mode preanalysis gate before validation, writes gate decisions into `validation_gate.json`, and produces a theory-oriented evidence report in `theory_evidence.md`.
 - `src/fsrc_sindy/experiment.py` now supports task-specific model lists and per-task model context so gated benchmark runs can vary by task without forking the benchmark runner.
-- `scripts/skill_inventory_report.py` and the project-local maintenance skills under `.agents/skills/project/` support ongoing repository upkeep, including diff summarization, README syncing, safer GitHub publishing, and repo-aware vibe coding.
+- `scripts/skill_inventory_report.py` and the project-local maintenance skills under `.agents/skills/project/` support ongoing repository upkeep, including diff summarization, README syncing, safer GitHub publishing, repo-aware vibe coding, and human-gated parallel workflow planning before execution.
+
+## Fast-Slow Validation Entry Point
+
+For theory-focused fast/slow experiments, use:
+
+```bash
+python scripts/run_fastslow_validation.py --suite fastslow_smoke --out_dir runs/fastslow_validation/fastslow_smoke
+```
+
+This entrypoint adds:
+
+- curated `fastslow_smoke` and `fastslow_theory` suites
+- a `theory_fastslow` coordinate family for Markov / spectral / Koopman checks
+- theory-oriented factor presets such as `slow_manifold_alignment`, `adiabatic_coherence`, `slow_level_norm`, and `closure_stress`
+- compact outputs in `fastslow_validation_report.md` and `fastslow_validation_summary.json`
+
+## Notebook Demo Update
+
+- Slow-fast notebooks now live under `notebooks/sf/` and follow the `<scope>_sf_demo.ipynb` naming rule.
+- `notebooks/sf/classic_sparse_sf_demo.ipynb` is the one-click review notebook for classic noisy and sparse-observation slow-fast validation.
+- Notebook reruns should write to `runs/demo_notebook/sf/<scope>/`, so cached review artifacts stay grouped by family.
+- `requirements.txt` now includes `matplotlib` because expert-facing review notebooks depend on plots.

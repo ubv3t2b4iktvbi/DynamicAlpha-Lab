@@ -32,6 +32,7 @@ The core idea is:
 
 ### Skills layout
 - `.claude/skills/project/`: project-specific skills for factor mining, backbone swapping, review, and suite orchestration.
+- `.claude/skills/project/math-implementation-validator/`: math-audit workflow for code-to-formula translation, operator checks, and numerical test design.
 - `.claude/skills/upstream/dynamics-research-skills/`: vendored upstream research skills bundle.
 
 ## Commands

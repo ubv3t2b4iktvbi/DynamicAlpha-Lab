@@ -61,6 +61,22 @@ def fitzhugh_nagumo_rhs(x: np.ndarray, t: float, p: dict) -> np.ndarray:
     return np.array([dv, dw], dtype=float)
 
 
+def hindmarsh_rose_rhs(x: np.ndarray, t: float, p: dict) -> np.ndarray:
+    a = p.get("a", 1.0)
+    b = p.get("b", 3.0)
+    c = p.get("c", 1.0)
+    d = p.get("d", 5.0)
+    r = p.get("r", 0.006)
+    s = p.get("s", 4.0)
+    x_r = p.get("x_r", -1.6)
+    I = p.get("I", 3.25)
+    v, y, z = x
+    dv = y - a * v**3 + b * v**2 - z + I
+    dy = c - d * v**2 - y
+    dz = r * (s * (v - x_r) - z)
+    return np.array([dv, dy, dz], dtype=float)
+
+
 def lorenz96_rhs(x: np.ndarray, t: float, p: dict) -> np.ndarray:
     F = p.get("F", 8.0)
     K = len(x)
@@ -112,6 +128,7 @@ SYSTEMS: Dict[str, Dict[str, object]] = {
     "duffing": {"rhs": duffing_rhs, "default_x0": np.array([0.1, 0.0], dtype=float)},
     "vanderpol": {"rhs": vanderpol_rhs, "default_x0": np.array([2.0, 0.0], dtype=float)},
     "fitzhugh_nagumo": {"rhs": fitzhugh_nagumo_rhs, "default_x0": np.array([-1.0, 1.0], dtype=float)},
+    "hindmarsh_rose": {"rhs": hindmarsh_rose_rhs, "default_x0": np.array([0.0, 0.0, 0.0], dtype=float)},
     "lorenz96": {"rhs": lorenz96_rhs, "default_x0": lorenz96_default_x0},
     "lorenz96_twoscale": {"rhs": lorenz96_twoscale_rhs, "default_x0": lorenz96_twoscale_default_x0},
 }
