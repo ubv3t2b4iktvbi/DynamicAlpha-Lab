@@ -100,89 +100,102 @@ Koopman operator 作用在函数空间上：
 
 如果你想更集中地看这部分内容，可以继续读：
 
-- [docs/theory/koopman_factor_introduction.md](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/docs/theory/koopman_factor_introduction.md)
+- [docs/theory/koopman_factor_introduction.md](/C:/Users/12345/Desktop/DynamicAlpha-Lab/docs/theory/koopman_factor_introduction.md)
 
-## 3. 当前主流程
+## 3. 更适合当前目标的推荐流程
 
-### 2.1 基准实验
+如果按照 README 的研究目标和 `src/fsrc_sindy/research/loop.py` 当前代码来理解，这个仓库更合理的默认主线不是“先跑 benchmark 再解释”，而是先判断什么坐标和什么因子值得进入验证，再用 benchmark 做受控验证。
+
+### 3.1 先选模式，而不是先选模型
+
+- `identify`
+  - 当前推荐默认主线
+  - 面向新任务、未知系统、或“先理解表示再验证模型”的场景
+  - 会先做原始信号性质分析，再决定是否值得继续探测 `fastslow`
+- `accumulate`
+  - 面向扩库、压力测试、跨任务沉淀因子
+  - 适合当你已经知道当前因子库不够，想先增加候选因子再回到验证闭环
+
+### 3.2 推荐先跑轻量闭环
 
 入口：
 
 ```bash
-python scripts/run_benchmarks.py --suite smoke --out_dir runs/benchmarks/smoke
+python scripts/run_research_loop.py --suite smoke --tasks vanderpol_smoke --out_dir runs/research_loop/demo --model_groups fastslow_ablation --mining_mode identify
 ```
 
-用途：
+当前代码里的实际顺序是：
 
-- 运行现有模型族在标准任务套件上的对比
-- 分析 `fastslow_ablation`、`memory_ablation`、`structured_ablation` 等模型组
-- 产出逐任务指标，用于后续理论解释
+1. `preanalysis`
+2. `coordinate_analysis`
+3. `factor_mining`
+4. `validation_gate`
+5. `benchmarks`
+6. `theory_evidence + confidence_report + expert_review_template`
 
-### 2.2 坐标分析
+这样排的原因是：benchmark 阶段现在依赖前面的证据。`identify` 模式会先根据原始信号判断 `fastslow` 是否值得作为假设坐标，再根据坐标分析结果决定哪些 fast/slow 模型允许进入验证，同时把 factor mining 选出来的因子 readout 变体一并接入 benchmark。
 
-入口：
+### 3.3 每一步应该回答什么问题
+
+#### `preanalysis`
+
+- 原始观测更像 oscillatory / multiscale / trend / bursty 的哪种组合
+- `fastslow` 该被当成默认结构，还是仅作为待证伪假设
+
+#### `coordinate_analysis`
+
+- `raw / delay / fastslow / factor` 哪个更接近 Markov
+- 哪个更保留局部谱结构
+- 哪个更接近 Koopman 风格线性不变子空间
+
+#### `factor_mining`
+
+- 在当前任务上，哪个 identifier 和哪些因子能通过性质引导预筛、前向选择和外推验证
+- 这些因子能否作为 readout 特征重新回接到 RC / NGRC 验证链路
+
+#### `benchmarks`
+
+- 在坐标门禁和因子 readout 变体都准备好之后，哪些模型在受控比较下真正胜出
+- 模型胜出是否来自更好的表示，而不是盲目增加结构先验
+
+### 3.4 看哪些产物来决定下一步
+
+- `preanalysis/preanalysis_summary.*`
+  - 先看任务是否真的支持 fast/slow 假设
+- `coordinate_analysis/<task>/coordinate_summary.md`
+  - 决定后续更该押注 `delay`、`factor` 还是 `fastslow`
+- `factor_mining/<task>/<identifier>/selected_factor_library.json`
+  - 看哪些因子真的进入 readout 候选
+- `validation_gate.json`
+  - 看哪些模型被允许进入最终验证
+- `theory_evidence.md` 和 `loop_summary.md`
+  - 汇总“坐标 -> 因子 -> 验证模型”的证据链
+
+### 3.5 子入口更适合什么时候单独用
+
+#### 只跑 benchmark
+
+```bash
+python scripts/run_benchmarks.py --suite smoke --model_groups fastslow_ablation --out_dir runs/benchmarks/smoke
+```
+
+适合在坐标假设已经比较稳定以后，专门比较模型族。
+
+#### 只跑 coordinate analysis
 
 ```bash
 python scripts/run_coordinate_analysis.py --suite smoke --tasks vanderpol_smoke --out_dir runs/coordinate_analysis/demo
 ```
 
-用途：
+适合在“应该用什么表示”仍不清楚的时候先做表示诊断。
 
-- 检测某种坐标是否更接近 Markov
-- 比较坐标是否保持局部 Jacobian / 谱结构
-- 分析坐标间弱耦合程度
-- 评估它是否更接近 Koopman 线性不变子空间
-
-默认比较的坐标：
-
-- `raw`
-- `delay`
-- `fastslow`
-- `factor`
-
-### 2.3 因子挖掘
-
-入口：
+#### 只跑 factor mining
 
 ```bash
-python scripts/run_factor_mining.py --suite smoke --tasks vanderpol_smoke --out_dir runs/factor_mining/demo
+python scripts/run_factor_mining.py --suite smoke --tasks vanderpol_smoke --mode identify --out_dir runs/factor_mining/identify_demo
 ```
 
-当前支持两种模式：
-
-- `accumulate`
-  - 面向“因子积累/训练”
-  - 更偏研究式扩库、压力测试、跨任务筛选
-  - 保留全库视角，强调人工审查与后续归档
-- `identify`
-  - 面向“未知系统识别/推理”
-  - 先做信号性质分析，再对因子库加权预筛
-  - 性质分析结果会给因子权重一个初始化
-  - 也支持 `--full_library_search` 强制全库搜索
-
-示例：
-
-```bash
-python scripts/run_factor_mining.py --suite smoke --tasks vanderpol_smoke --mode identify --full_library_search --out_dir runs/factor_mining/identify_demo
-```
-
-### 2.4 研究总控闭环
-
-入口：
-
-```bash
-python scripts/run_research_loop.py --suite smoke --tasks vanderpol_smoke --out_dir runs/research_loop/demo --model_groups fastslow_ablation --mining_mode identify --full_library_search
-```
-
-这个脚本会自动串起来：
-
-1. benchmark 消融实验
-2. coordinate analysis
-3. factor mining
-4. 置信度报告
-5. 专家审核模板
-
-它是当前仓库最接近“一键式研究闭环”的入口。
+适合在你已经确认任务值得挖因子，但还不想马上跑完整闭环的时候使用。
 
 ## 4. 重要设计理念
 
@@ -319,6 +332,9 @@ python scripts/run_research_loop.py --suite smoke --tasks vanderpol_smoke --out_
 
 总控运行会额外包含：
 
+- `preanalysis/`
+- `validation_gate.json`
+- `theory_evidence.md`
 - `loop_summary.md`
 - `loop_manifest.json`
 - `confidence_report.json`
@@ -326,7 +342,7 @@ python scripts/run_research_loop.py --suite smoke --tasks vanderpol_smoke --out_
 
 ## 8. 项目 skill
 
-项目内有一组专用 skill，主要放在 `.claude/skills/project/`：
+项目内有一组专用 skill，源码放在 `.agents/skills/project/`，需要跨工具链复用时会镜像到 `.claude/skills/project/`：
 
 - `dynamics-factor-miner`
 - `factor-suite-orchestrator`
@@ -335,7 +351,7 @@ python scripts/run_research_loop.py --suite smoke --tasks vanderpol_smoke --out_
 - `dynamical-theory-reasoner`
 - `closed-loop-factor-orchestrator`
 
-这些 skill 不是用户文档，而是给 AI 代理用的工作流程提示。详细触发方式见顶层 [AGENTS.md](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/AGENTS.md)。
+这些 skill 不是用户文档，而是给 AI 代理用的工作流程提示。详细触发方式见顶层 [AGENTS.md](/C:/Users/12345/Desktop/DynamicAlpha-Lab/AGENTS.md)。
 
 ## 9. 环境安装
 
@@ -361,11 +377,11 @@ pip install -r requirements.txt
 如果你第一次进入这个项目，推荐按下面顺序看：
 
 1. 本 README
-2. [scripts/README.md](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/scripts/README.md)
-3. [src/README.md](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/src/README.md)
-4. [src/fsrc_sindy/README.md](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/src/fsrc_sindy/README.md)
-5. [docs/README.md](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/docs/README.md)
-6. [docs/theory/koopman_factor_introduction.md](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/docs/theory/koopman_factor_introduction.md)
+2. [scripts/README.md](/C:/Users/12345/Desktop/DynamicAlpha-Lab/scripts/README.md)
+3. [src/README.md](/C:/Users/12345/Desktop/DynamicAlpha-Lab/src/README.md)
+4. [src/fsrc_sindy/README.md](/C:/Users/12345/Desktop/DynamicAlpha-Lab/src/fsrc_sindy/README.md)
+5. [docs/README.md](/C:/Users/12345/Desktop/DynamicAlpha-Lab/docs/README.md)
+6. [docs/theory/koopman_factor_introduction.md](/C:/Users/12345/Desktop/DynamicAlpha-Lab/docs/theory/koopman_factor_introduction.md)
 6. 再去看最近一次 `runs/research_loop/.../loop_summary.md`
 
 ## 11. 当前边界

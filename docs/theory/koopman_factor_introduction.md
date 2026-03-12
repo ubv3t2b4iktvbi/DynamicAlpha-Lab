@@ -105,7 +105,7 @@ Koopman operator 定义为：
 
 ### coordinate analysis
 
-在 [coordinate_analysis.py](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/src/fsrc_sindy/research/coordinate_analysis.py) 中，当前已经加入：
+在 [coordinate_analysis.py](/C:/Users/12345/Desktop/DynamicAlpha-Lab/src/fsrc_sindy/research/coordinate_analysis.py) 中，当前已经加入：
 
 - `koopman_invariance_score`
 - `koopman_linear_r2`
@@ -120,7 +120,7 @@ Koopman operator 定义为：
 
 ### factor mining
 
-在 [property_analyzer.py](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/src/fsrc_sindy/factors/property_analyzer.py) 和 [miner.py](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/src/fsrc_sindy/factors/miner.py) 中，当前已经加入：
+在 [property_analyzer.py](/C:/Users/12345/Desktop/DynamicAlpha-Lab/src/fsrc_sindy/factors/property_analyzer.py) 和 [miner.py](/C:/Users/12345/Desktop/DynamicAlpha-Lab/src/fsrc_sindy/factors/miner.py) 中，当前已经加入：
 
 - 单因子 Koopman 标量诊断
 - 近似 `f_{t+1} ~= lambda f_t` 评分
@@ -128,7 +128,7 @@ Koopman operator 定义为：
 
 ### research loop
 
-在 [loop.py](/C:/Users/12345/Desktop/rc_dynamics_factor_mining_project/src/fsrc_sindy/research/loop.py) 中，当前会：
+在 [loop.py](/C:/Users/12345/Desktop/DynamicAlpha-Lab/src/fsrc_sindy/research/loop.py) 中，当前会：
 
 - 汇总最优 Koopman-like 坐标
 - 将 Koopman 指标纳入闭环置信度
@@ -163,4 +163,3 @@ Koopman operator 定义为：
 ## 9. 一句话总结
 
 这个项目把“动力学因子挖掘”视为“寻找更接近 Koopman 坐标的可解释特征”的过程，而不是单纯追求更低误差的黑箱特征工程。
-
