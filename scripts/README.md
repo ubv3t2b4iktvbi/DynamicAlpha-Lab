@@ -51,7 +51,7 @@ python scripts/run_factor_mining.py --suite smoke --tasks vanderpol_smoke --mode
 
 - 一键执行研究闭环
 - 串联 benchmark、coordinate analysis、factor mining
-- 自动生成置信度报告和专家审核模板
+- 自动生成理论证据、theory research、外部量化因子更新计划、置信度报告和专家审核模板
 
 示例：
 

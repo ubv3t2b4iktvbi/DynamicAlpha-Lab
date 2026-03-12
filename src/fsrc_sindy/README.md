@@ -113,5 +113,4 @@
 - `models/rc.py` and `models/ngrc.py` now reuse a shared causal readout layer instead of maintaining separate fast/slow feature plumbing.
 - `factors/readout.py` provides the shared causal readout encoder for mined factors and legacy fast/slow readout features.
 - `factors/repository.py` provides reusable factor presets, a central registry, and selected-library loading helpers.
-- `research/loop.py` now includes identify-mode preanalysis, validation gating, and theory-aware evidence synthesis outputs.
-
+- `research/loop.py` now includes identify-mode preanalysis, validation gating, theory-aware evidence synthesis, autonomous theory-research summaries, and source-guided quant-factor update plans.

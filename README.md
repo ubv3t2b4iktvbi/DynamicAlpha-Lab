@@ -335,6 +335,8 @@ python scripts/run_research_loop.py --suite smoke --tasks vanderpol_smoke --out_
 - `preanalysis/`
 - `validation_gate.json`
 - `theory_evidence.md`
+- `theory_research.md`
+- `quant_factor_update_plan.md`
 - `loop_summary.md`
 - `loop_manifest.json`
 - `confidence_report.json`

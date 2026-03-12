@@ -590,6 +590,570 @@ def _render_theory_evidence_report(evidence_rows: list[dict[str, object]], inclu
     return "\n".join(lines)
 
 
+def _best_row(df: pd.DataFrame, sort_by: str, *, ascending: bool = True) -> pd.Series | None:
+    if df.empty or sort_by not in df.columns:
+        return None
+    ordered = df.sort_values(sort_by, ascending=ascending, na_position="last").reset_index(drop=True)
+    if ordered.empty:
+        return None
+    return ordered.iloc[0]
+
+
+def _selected_factor_names(row: pd.Series | None) -> list[str]:
+    if row is None:
+        return []
+    payload = row.get("selected_factors", "")
+    if pd.isna(payload):
+        return []
+    return [part.strip() for part in str(payload).split(";") if part.strip()]
+
+
+def _relative_generalization_gap(row: pd.Series | None) -> float:
+    if row is None:
+        return float("nan")
+    final_rmse50 = float(row.get("final_rmse50", np.nan))
+    test_rmse50 = float(row.get("test_rmse50", np.nan))
+    if not np.isfinite(final_rmse50) or not np.isfinite(test_rmse50):
+        return float("nan")
+    return float(abs(test_rmse50 - final_rmse50) / (abs(final_rmse50) + 1e-12))
+
+
+def _safe_metric_text(name: str, value: float, fmt: str = ".4g") -> str:
+    if not np.isfinite(value):
+        return f"{name}=nan"
+    return f"{name}={value:{fmt}}"
+
+
+def _task_bottleneck(
+    closure_row: pd.Series | None,
+    spectral_row: pd.Series | None,
+    gate_decision: TaskGateDecision | None,
+    factor_row: pd.Series | None,
+    benchmark_row: pd.Series | None,
+) -> str:
+    if closure_row is not None and str(closure_row.get("coordinate", "")) == "delay":
+        return "memory or closure terms are still missing from the state representation"
+    if gate_decision is not None and gate_decision.fastslow_coordinate_hypothesis and not gate_decision.fastslow_validation_allowed:
+        return "hand-crafted fast/slow structure looks plausible in raw signals but is not surviving coordinate validation"
+    if spectral_row is not None and str(spectral_row.get("coordinate", "")) == "fastslow":
+        return "timescale separation may help geometry locally, but it is not yet the dominant closure representation"
+    if factor_row is not None and benchmark_row is not None and "factor_readout" in str(benchmark_row.get("variant", "")):
+        return "translated factors are informative, but they still need broader validation before promotion"
+    if factor_row is not None:
+        return "factor semantics are promising, but transfer and stability are still the limiting step"
+    return "the loop needs tighter interpretation and follow-up validation before promotion"
+
+
+def _task_research_analysis(
+    task: str,
+    *,
+    preanalysis_row: pd.Series | None,
+    coordinate_task_df: pd.DataFrame,
+    factor_task_df: pd.DataFrame,
+    benchmark_task_df: pd.DataFrame,
+    gate_decision: TaskGateDecision | None,
+) -> dict[str, object]:
+    closure_row = _best_row(coordinate_task_df, "markov_gain_ratio", ascending=True)
+    spectral_row = _best_row(coordinate_task_df, "spectral_radius_rmse", ascending=True)
+    koopman_row = _best_row(coordinate_task_df, "koopman_invariance_score", ascending=False)
+    factor_row = _best_row(factor_task_df, "validation_score", ascending=True)
+    benchmark_row = _best_row(benchmark_task_df, "rmse@50", ascending=True)
+
+    coordinate_winners = [
+        str(row.get("coordinate", ""))
+        for row in (closure_row, spectral_row, koopman_row)
+        if row is not None and str(row.get("coordinate", "")).strip()
+    ]
+    unique_winners = list(dict.fromkeys(coordinate_winners))
+    contradictions: list[str] = []
+    if len(unique_winners) > 1:
+        contradictions.append(
+            "different theory lenses prefer different coordinates, so one representation is not yet dominant"
+        )
+    if gate_decision is not None and gate_decision.fastslow_coordinate_hypothesis and not gate_decision.fastslow_validation_allowed:
+        contradictions.append(
+            "raw preanalysis suggested multiscale structure, but fast/slow was rejected by coordinate-level evidence"
+        )
+    factor_gap = _relative_generalization_gap(factor_row)
+    if factor_row is not None and np.isfinite(factor_gap) and factor_gap > 0.75:
+        contradictions.append(
+            "the best mined factor family still shows a large validation-to-test gap"
+        )
+
+    bottleneck = _task_bottleneck(
+        closure_row=closure_row,
+        spectral_row=spectral_row,
+        gate_decision=gate_decision,
+        factor_row=factor_row,
+        benchmark_row=benchmark_row,
+    )
+
+    if len(unique_winners) > 1 or len(contradictions) >= 2:
+        chosen_mode = "divergent"
+        mode_reason = (
+            "The current evidence still supports multiple non-equivalent mechanisms, so the next step should widen "
+            "the theory search space before pretending one story has already won."
+        )
+    elif closure_row is not None and str(closure_row.get("coordinate", "")) == "delay":
+        chosen_mode = "validation"
+        mode_reason = (
+            "Delay coordinates are leading the closure test, which makes missing memory or unresolved latent closure "
+            "the sharpest bottleneck; the next cycle should therefore design discriminative validation experiments."
+        )
+    else:
+        chosen_mode = "convergent"
+        mode_reason = (
+            "The evidence is relatively aligned, so the next cycle should compress claims, remove overreach, and keep "
+            "only the mechanisms that the current diagnostics actually support."
+        )
+
+    observations: list[str] = []
+    if closure_row is not None:
+        observations.append(
+            f"Markov closure currently favors `{closure_row['coordinate']}` with "
+            f"{_safe_metric_text('markov_gain_ratio', float(closure_row.get('markov_gain_ratio', np.nan)))}."
+        )
+    if spectral_row is not None:
+        observations.append(
+            f"Local spectral preservation currently favors `{spectral_row['coordinate']}` with "
+            f"{_safe_metric_text('spectral_radius_corr', float(spectral_row.get('spectral_radius_corr', np.nan)))} and "
+            f"{_safe_metric_text('spectral_radius_rmse', float(spectral_row.get('spectral_radius_rmse', np.nan)))}."
+        )
+    if koopman_row is not None:
+        observations.append(
+            f"Koopman-style linear invariance currently favors `{koopman_row['coordinate']}` with "
+            f"{_safe_metric_text('koopman_invariance_score', float(koopman_row.get('koopman_invariance_score', np.nan)))}."
+        )
+    if gate_decision is not None:
+        observations.append(
+            f"Fast/slow validation was {'allowed' if gate_decision.fastslow_validation_allowed else 'rejected'}: {gate_decision.reason}"
+        )
+    if factor_row is not None:
+        observations.append(
+            f"The strongest mined factor family is `{factor_row.get('selected_factors', '')}` from `{factor_row.get('identifier_kind', '')}` "
+            f"with {_safe_metric_text('selected_koopman_score', float(factor_row.get('selected_koopman_score', np.nan)))}."
+        )
+    if benchmark_row is not None:
+        observations.append(
+            f"The current validation winner is `{benchmark_row.get('variant', '')}` with "
+            f"{_safe_metric_text('rmse@50', float(benchmark_row.get('rmse@50', np.nan)))}."
+        )
+
+    hypotheses: list[dict[str, str]] = []
+
+    def add_hypothesis(name: str, lens: str, why_now: str, prediction: str, falsifier: str) -> None:
+        if len(hypotheses) >= 3:
+            return
+        if any(existing["name"] == name for existing in hypotheses):
+            return
+        hypotheses.append(
+            {
+                "name": name,
+                "lens": lens,
+                "why_now": why_now,
+                "prediction": prediction,
+                "falsifier": falsifier,
+            }
+        )
+
+    if closure_row is not None and str(closure_row.get("coordinate", "")) == "delay":
+        add_hypothesis(
+            name="Unresolved memory or closure is still dominating the task",
+            lens="Markov closure / Mori-Zwanzig-style memory",
+            why_now=(
+                f"`delay` wins the closure test with {_safe_metric_text('markov_gain_ratio', float(closure_row.get('markov_gain_ratio', np.nan)))}."
+            ),
+            prediction=(
+                "Delay-aware coordinates, explicit closure terms, or memory-rich readouts should improve validation "
+                "without requiring hand-crafted fast/slow structure."
+            ),
+            falsifier=(
+                "Matched-capacity memory-aware variants fail to beat the current winner on rollout, spectral, and "
+                "Koopman metrics."
+            ),
+        )
+    if gate_decision is not None and gate_decision.fastslow_coordinate_hypothesis and not gate_decision.fastslow_validation_allowed:
+        add_hypothesis(
+            name="Hand-built fast/slow structure is acting more like a denoiser than a faithful state coordinate",
+            lens="Timescale separation versus geometry preservation",
+            why_now=gate_decision.evidence,
+            prediction=(
+                "Learned or retuned slow coordinates should recover some of the separability benefits while closing "
+                "the remaining spectral or Markov gap."
+            ),
+            falsifier=(
+                "Retuned or learned slow coordinates still underperform delay and factor coordinates on both closure "
+                "and spectral preservation."
+            ),
+        )
+    if factor_row is not None and float(factor_row.get("selected_koopman_score", 0.0)) >= 0.6:
+        add_hypothesis(
+            name="The selected factor family is approximating a Koopman-style observable",
+            lens="Koopman factor view",
+            why_now=(
+                f"`{factor_row.get('selected_factors', '')}` reached "
+                f"{_safe_metric_text('selected_koopman_score', float(factor_row.get('selected_koopman_score', np.nan)))} "
+                f"with test/generalization gap {_safe_metric_text('gap', factor_gap)}."
+            ),
+            prediction=(
+                "Reusing this factor family as a coordinate or readout should remain beneficial across another seed, "
+                "task, or identifier rather than only helping one-step screening."
+            ),
+            falsifier=(
+                "The factor family loses its advantage once evaluated on another task, seed, or geometry-aware metric."
+            ),
+        )
+    if benchmark_row is not None and "factor_readout" in str(benchmark_row.get("variant", "")):
+        add_hypothesis(
+            name="Structured factor readout is helping because the model is receiving better observables, not just more capacity",
+            lens="Representation-first validation",
+            why_now=(
+                f"The benchmark winner is `{benchmark_row.get('variant', '')}` while the mined factor family is "
+                f"`{factor_row.get('selected_factors', '')}`."
+            ),
+            prediction=(
+                "The factor-readout advantage should persist under matched-capacity comparisons against raw and "
+                "fast/slow baselines."
+            ),
+            falsifier=(
+                "A matched-capacity raw or delay baseline recovers the same gain without using the translated factor set."
+            ),
+        )
+
+    claim_ledger: list[dict[str, str]] = []
+
+    def add_claim(claim: str, status: str, evidence_for: str, evidence_missing: str, next_experiment: str) -> None:
+        claim_ledger.append(
+            {
+                "claim": claim,
+                "status": status,
+                "evidence_for": evidence_for,
+                "evidence_missing": evidence_missing,
+                "next_experiment": next_experiment,
+            }
+        )
+
+    if closure_row is not None and spectral_row is not None and koopman_row is not None:
+        closure_claim_status = "candidate insight" if len(unique_winners) == 1 else "observation"
+        add_claim(
+            claim=f"`{closure_row['coordinate']}` is the strongest current state representation for this task.",
+            status=closure_claim_status,
+            evidence_for=(
+                f"closure={closure_row['coordinate']}, spectrum={spectral_row['coordinate']}, "
+                f"koopman={koopman_row['coordinate']}"
+            ),
+            evidence_missing=(
+                "cross-seed stability and a targeted test that rules out simpler memory explanations"
+            ),
+            next_experiment=(
+                "run a matched-capacity representation comparison across raw, delay, factor, and any learned slow coordinate"
+            ),
+        )
+    if factor_row is not None:
+        factor_status = "candidate insight" if float(factor_row.get("selected_koopman_score", 0.0)) >= 0.9 and np.isfinite(factor_gap) and factor_gap <= 0.5 else "hypothesis"
+        add_claim(
+            claim=f"`{factor_row.get('selected_factors', '')}` is a mechanistically meaningful dynamical factor family.",
+            status=factor_status,
+            evidence_for=(
+                f"identifier={factor_row.get('identifier_kind', '')}, "
+                f"selected_koopman_score={float(factor_row.get('selected_koopman_score', np.nan)):.4g}, "
+                f"final_rmse50={float(factor_row.get('final_rmse50', np.nan)):.4g}, "
+                f"test_rmse50={float(factor_row.get('test_rmse50', np.nan)):.4g}"
+            ),
+            evidence_missing=(
+                "transfer to another task, seed, or coordinate role plus expert confirmation of the proposed mechanism"
+            ),
+            next_experiment=(
+                "replay the factor family on another smoke task or identifier and compare Koopman score, rollout, and benchmark transfer"
+            ),
+        )
+    if benchmark_row is not None:
+        benchmark_status = "hypothesis" if "factor_readout" in str(benchmark_row.get("variant", "")) else "observation"
+        add_claim(
+            claim=f"`{benchmark_row.get('variant', '')}` is the right validation model family for this task.",
+            status=benchmark_status,
+            evidence_for=(
+                f"rmse@50={float(benchmark_row.get('rmse@50', np.nan)):.4g}, "
+                f"acf_rmse={float(benchmark_row.get('acf_rmse', np.nan)):.4g}, "
+                f"psd_rmse={float(benchmark_row.get('psd_rmse', np.nan)):.4g}"
+            ),
+            evidence_missing=(
+                "matched-capacity controls and a check that the gain survives another seed or neighboring task"
+            ),
+            next_experiment=(
+                "rerun the winning family against the nearest raw or delay baseline under matched capacity and multiple seeds"
+            ),
+        )
+
+    next_actions: list[str] = []
+
+    def add_action(action: str) -> None:
+        if action and action not in next_actions and len(next_actions) < 3:
+            next_actions.append(action)
+
+    if closure_row is not None and str(closure_row.get("coordinate", "")) == "delay":
+        add_action(
+            "Run a matched-capacity raw vs delay vs factor-readout validation sweep across multiple seeds to test whether the bottleneck is memory closure or coordinate quality."
+        )
+    if gate_decision is not None and gate_decision.fastslow_coordinate_hypothesis and not gate_decision.fastslow_validation_allowed:
+        add_action(
+            "Replace fixed fast/slow windows with retuned or learned slow coordinates, then repeat coordinate analysis before sending any fast/slow model back into validation."
+        )
+    if factor_row is not None:
+        add_action(
+            "Replay the selected factor family across another task, seed, or identifier and compare selected_koopman_score, final_rmse50, test_rmse50, and benchmark transfer."
+        )
+    add_action(
+        "Convert only the surviving mechanism claims into targeted experiments, and keep every interpretation marked as pending dynamics-expert review."
+    )
+
+    current_state = {
+        "task": task,
+        "dominant_axes": str(preanalysis_row.get("dominant_axes", "")) if preanalysis_row is not None else "",
+        "best_closure_coordinate": str(closure_row.get("coordinate", "")) if closure_row is not None else "",
+        "best_spectral_coordinate": str(spectral_row.get("coordinate", "")) if spectral_row is not None else "",
+        "best_koopman_coordinate": str(koopman_row.get("coordinate", "")) if koopman_row is not None else "",
+        "best_factor_family": str(factor_row.get("selected_factors", "")) if factor_row is not None else "",
+        "best_benchmark_variant": str(benchmark_row.get("variant", "")) if benchmark_row is not None else "",
+        "unresolved_contradictions": contradictions,
+        "current_bottleneck": bottleneck,
+    }
+    return {
+        "task": task,
+        "current_state": current_state,
+        "chosen_mode": chosen_mode,
+        "mode_reason": mode_reason,
+        "observations": observations,
+        "hypotheses": hypotheses,
+        "claim_ledger": claim_ledger,
+        "next_actions": next_actions,
+    }
+
+
+def _render_theory_research_report(research_rows: list[dict[str, object]]) -> str:
+    lines = [
+        "# Theory Research",
+        "",
+        "This stage extends the closed loop from result reporting into mechanism-oriented theory study.",
+        "All claims remain provisional and must still pass the expert-review gate.",
+        "",
+    ]
+    if not research_rows:
+        lines.append("No theory-research rows were generated.")
+        return "\n".join(lines)
+    for row in research_rows:
+        current_state = dict(row.get("current_state", {}))
+        contradictions = list(current_state.get("unresolved_contradictions", []))
+        lines.extend([f"## {row['task']}", "", "### Current research state", ""])
+        lines.append(f"- current bottleneck: {current_state.get('current_bottleneck', '')}")
+        if current_state.get("dominant_axes"):
+            lines.append(f"- dominant axes: {current_state.get('dominant_axes', '')}")
+        lines.append(f"- best closure coordinate: {current_state.get('best_closure_coordinate', '')}")
+        lines.append(f"- best spectral coordinate: {current_state.get('best_spectral_coordinate', '')}")
+        lines.append(f"- best Koopman-like coordinate: {current_state.get('best_koopman_coordinate', '')}")
+        if current_state.get("best_factor_family"):
+            lines.append(f"- best factor family: {current_state.get('best_factor_family', '')}")
+        if current_state.get("best_benchmark_variant"):
+            lines.append(f"- best benchmark variant: {current_state.get('best_benchmark_variant', '')}")
+        if contradictions:
+            lines.append(f"- unresolved contradictions: {'; '.join(contradictions)}")
+        else:
+            lines.append("- unresolved contradictions: none that currently dominate the loop")
+        lines.extend(["", "### Chosen mode and why", "", f"- mode: {row.get('chosen_mode', '')}", f"- reason: {row.get('mode_reason', '')}", "", "### Execution output", "", "#### Observations", ""])
+        for observation in row.get("observations", []):
+            lines.append(f"- {observation}")
+        hypotheses = list(row.get("hypotheses", []))
+        if hypotheses:
+            lines.extend(["", "#### Hypotheses", ""])
+            for hypothesis in hypotheses:
+                lines.append(f"- {hypothesis['name']}")
+                lines.append(f"  Lens: {hypothesis['lens']}")
+                lines.append(f"  Why now: {hypothesis['why_now']}")
+                lines.append(f"  Prediction signature: {hypothesis['prediction']}")
+                lines.append(f"  Falsifier: {hypothesis['falsifier']}")
+        claim_ledger = list(row.get("claim_ledger", []))
+        if claim_ledger:
+            lines.extend(
+                [
+                    "",
+                    "### Updated claim ledger",
+                    "",
+                    pd.DataFrame(claim_ledger)[["claim", "status", "evidence_for", "evidence_missing", "next_experiment"]].to_markdown(index=False),
+                ]
+            )
+        lines.extend(["", "### Top next actions", ""])
+        for idx, action in enumerate(row.get("next_actions", []), start=1):
+            lines.append(f"{idx}. {action}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _task_quant_factor_update_plan(
+    task: str,
+    *,
+    preanalysis_row: pd.Series | None,
+    factor_task_df: pd.DataFrame,
+    benchmark_task_df: pd.DataFrame,
+    theory_research_row: dict[str, object],
+    gate_decision: TaskGateDecision | None,
+) -> dict[str, object]:
+    factor_row = _best_row(factor_task_df, "validation_score", ascending=True)
+    benchmark_row = _best_row(benchmark_task_df, "rmse@50", ascending=True)
+    factor_names = _selected_factor_names(factor_row)
+    lower_factor_names = " ".join(factor_names).lower()
+    target_families: list[dict[str, str]] = []
+
+    def add_family(
+        family: str,
+        why_now: str,
+        look_for: str,
+        local_translation: str,
+        first_validation: str,
+    ) -> None:
+        if any(existing["family"] == family for existing in target_families):
+            return
+        target_families.append(
+            {
+                "family": family,
+                "why_now": why_now,
+                "look_for": look_for,
+                "local_translation": local_translation,
+                "first_validation": first_validation,
+            }
+        )
+
+    current_gap = str(dict(theory_research_row.get("current_state", {})).get("current_bottleneck", ""))
+    if "memory" in current_gap or "closure" in current_gap:
+        add_family(
+            family="memory / closure / delay dependence",
+            why_now="Delay coordinates are still leading the closure test, so external motifs should target unresolved memory rather than short-horizon shortcuts.",
+            look_for="lag interactions, path-dependent recovery, delayed reversal, state-history compression, or closure residual motifs",
+            local_translation="Restate the motif as causal lag or closure observables before touching factor_bank or feature_engine.",
+            first_validation=(
+                f"python scripts/run_coordinate_analysis.py --suite smoke --tasks {task} --out_dir runs/coordinate_analysis/{task}_memory_update"
+            ),
+        )
+    multiscale_score = float(preanalysis_row.get("multiscale_score", 0.0)) if preanalysis_row is not None else 0.0
+    if multiscale_score >= 0.55 or (gate_decision is not None and gate_decision.fastslow_coordinate_hypothesis):
+        add_family(
+            family="order parameter / slow-fast gap",
+            why_now="Raw preanalysis still sees multiscale structure, so external libraries may contain reusable slow-fast or regime-gap motifs.",
+            look_for="slow-fast spreads, order-parameter gaps, regime-distance scores, and explicit phase-gap transitions",
+            local_translation="Prefer composition from existing fast/slow or order-parameter bases before adding new primitives.",
+            first_validation=(
+                f"python scripts/run_factor_mining.py --suite smoke --tasks {task} --mode accumulate --out_dir runs/factor_mining/{task}_slowfast_update"
+            ),
+        )
+        add_family(
+            family="multiscale collapse / compression",
+            why_now="The task still exhibits multiscale structure, so external motifs about compression or collapse may map cleanly onto local collapse-quality style factors.",
+            look_for="compression ratios, volatility contraction, squeeze-like motifs, multiscale agreement, or collapse readiness scores",
+            local_translation="Bind the motif to collapse, scale, or compression quantities from the local feature engine and keep the mechanism causal.",
+            first_validation=(
+                f"python scripts/run_factor_mining.py --suite smoke --tasks {task} --mode accumulate --out_dir runs/factor_mining/{task}_compression_update"
+            ),
+        )
+    if any(token in lower_factor_names for token in ("phase", "retracement", "recovery", "support", "shock")):
+        add_family(
+            family="phase / retracement / recovery",
+            why_now="The strongest local factors already lean on phase or retracement structure, so outside libraries should be mined for nearby motifs rather than unrelated formulas.",
+            look_for="retracement quality, recovery confirmation, support reclaim, bottoming signatures, and reversal-with-memory motifs",
+            local_translation="Translate the source motif into phase-aligned, recovery-aware factors that only use causal local state.",
+            first_validation=(
+                f"python scripts/run_factor_mining.py --suite smoke --tasks {task} --mode identify --out_dir runs/factor_mining/{task}_phase_update"
+            ),
+        )
+    if any(token in lower_factor_names for token in ("energy", "breakout", "release")):
+        add_family(
+            family="energy / control injection",
+            why_now="Current factors already touch energy-like motifs, so external factor libraries may offer better causal decompositions of activation or breakout structure.",
+            look_for="energy release, breakout activation, control injection, or burst-strength motifs",
+            local_translation="Recast the motif in terms of local energy imbalance or control-parameter surges, not market-only semantics.",
+            first_validation=(
+                f"python scripts/run_factor_mining.py --suite smoke --tasks {task} --mode accumulate --out_dir runs/factor_mining/{task}_energy_update"
+            ),
+        )
+    if benchmark_row is not None and "factor_readout" in str(benchmark_row.get("variant", "")):
+        add_family(
+            family="composite interaction gates",
+            why_now="Factor-aware readout is already winning validation, so external motif mining should look for interaction gates that can survive causal translation.",
+            look_for="gated interactions, conditional factor products, asymmetric activation terms, and state-dependent response gates",
+            local_translation="Prefer compositional ops in FactorSpec first and only add new base features when the mechanism would otherwise be hidden.",
+            first_validation=(
+                f"python scripts/run_research_loop.py --suite smoke --tasks {task} --out_dir runs/research_loop/{task}_composite_update --mining_mode identify"
+            ),
+        )
+    if factor_row is None or float(factor_row.get("selected_koopman_score", 0.0)) < 0.5:
+        add_family(
+            family="regime surprise / physics-identifier mismatch",
+            why_now="The local factor stack is not yet giving a strong Koopman-style candidate, so it is worth mining external libraries for regime-change or identifier-mismatch motifs.",
+            look_for="surprise, mismatch, instability, or transition-sensitive factors that can be grounded in local dynamics",
+            local_translation="Treat the external metric as a clue about latent regime mismatch and restate it as causal local dynamics before adding it.",
+            first_validation=(
+                f"python scripts/run_coordinate_analysis.py --suite smoke --tasks {task} --out_dir runs/coordinate_analysis/{task}_regime_update"
+            ),
+        )
+    if not target_families:
+        add_family(
+            family="phase / retracement / recovery",
+            why_now="Even without a dominant motif family yet, phase-style recovery signals remain a compact first pass for external factor translation.",
+            look_for="reversal confirmation, recovery persistence, and path-dependent retracement motifs",
+            local_translation="Translate only the causal parts and keep both finance_origin and dynamics_meaning explicit.",
+            first_validation=(
+                f"python scripts/run_factor_mining.py --suite smoke --tasks {task} --mode identify --out_dir runs/factor_mining/{task}_external_update"
+            ),
+        )
+
+    preferred_intake_mode = "identify"
+    if len(target_families) >= 3 and factor_row is not None:
+        preferred_intake_mode = "accumulate"
+
+    return {
+        "task": task,
+        "preferred_intake_mode": preferred_intake_mode,
+        "current_gap": current_gap,
+        "source_repo_status": "not pinned yet; choose one external quant repository before intake",
+        "target_files": [
+            "src/fsrc_sindy/factors/factor_bank.py",
+            "src/fsrc_sindy/factors/finance_to_dynamics.py",
+        ],
+        "target_families": target_families[:4],
+    }
+
+
+def _render_quant_factor_update_report(update_rows: list[dict[str, object]]) -> str:
+    lines = [
+        "# Quant Factor Update Plan",
+        "",
+        "This stage turns closed-loop results into a source-guided plan for mining external quant factor libraries.",
+        "It follows the `quant-factor-dynamics-updater` workflow, but remains conservative until a concrete source repo is chosen and reviewed.",
+        "",
+    ]
+    if not update_rows:
+        lines.append("No quant-factor update plans were generated.")
+        return "\n".join(lines)
+    for row in update_rows:
+        lines.extend([f"## {row['task']}", ""])
+        lines.append(f"- preferred intake mode: {row.get('preferred_intake_mode', '')}")
+        lines.append(f"- current gap: {row.get('current_gap', '')}")
+        lines.append(f"- source repo status: {row.get('source_repo_status', '')}")
+        lines.append(f"- local update targets: {', '.join(row.get('target_files', []))}")
+        families = list(row.get("target_families", []))
+        if families:
+            lines.extend(
+                [
+                    "",
+                    pd.DataFrame(families)[["family", "why_now", "look_for", "local_translation", "first_validation"]].to_markdown(index=False),
+                    "",
+                    "Promotion gate: keep the evidence trail reviewable, and do not promote any external motif until it survives local factor mining, coordinate analysis, and expert review.",
+                    "",
+                ]
+            )
+        else:
+            lines.extend(["", "No target families were generated.", ""])
+    return "\n".join(lines)
+
+
 def _build_confidence_report(
     benchmark_df: pd.DataFrame,
     coordinate_df: pd.DataFrame,
@@ -639,6 +1203,8 @@ def _render_expert_review_template(confidence_rows: list[dict[str, object]], man
             "- Verify that the winning ablation is not an artifact of short-horizon metrics alone.",
             "- Verify that coordinate conclusions are consistent with known attractor geometry and not caused by proxy mismatch.",
             "- Verify that selected or proposed factors have valid mechanistic meaning and remain causal.",
+            "- Review the autonomous theory-research hypotheses before treating them as accepted mechanism claims.",
+            "- Review any proposed external quant-factor update family before modifying the local factor bank.",
             "- Approve or reject the proposed next experiment.",
             "- Approve or reject any factor-bank modification.",
             "",
@@ -668,6 +1234,8 @@ def _render_loop_summary(
     confidence_rows: list[dict[str, object]],
     gate_decisions: list[TaskGateDecision],
     theory_evidence_rows: list[dict[str, object]],
+    theory_research_rows: list[dict[str, object]],
+    quant_update_rows: list[dict[str, object]],
 ) -> str:
     lines = [
         "# Research loop summary",
@@ -768,6 +1336,45 @@ def _render_loop_summary(
                 "",
             ]
         )
+    if theory_research_rows:
+        theory_summary = pd.DataFrame(
+            [
+                {
+                    "task": row["task"],
+                    "mode": row["chosen_mode"],
+                    "bottleneck": dict(row.get("current_state", {})).get("current_bottleneck", ""),
+                    "top_action": (row.get("next_actions", [""]) or [""])[0],
+                }
+                for row in theory_research_rows
+            ]
+        )
+        lines.extend(
+            [
+                "## Autonomous theory research",
+                "",
+                theory_summary.to_markdown(index=False),
+                "",
+            ]
+        )
+    if quant_update_rows:
+        quant_summary = pd.DataFrame(
+            [
+                {
+                    "task": row["task"],
+                    "preferred_intake_mode": row.get("preferred_intake_mode", ""),
+                    "target_families": "; ".join(family["family"] for family in row.get("target_families", [])),
+                }
+                for row in quant_update_rows
+            ]
+        )
+        lines.extend(
+            [
+                "## External quant factor update",
+                "",
+                quant_summary.to_markdown(index=False),
+                "",
+            ]
+        )
     if not factor_df.empty:
         lines.extend(
             [
@@ -789,7 +1396,7 @@ def _render_loop_summary(
             "",
             "## Next-step prompt",
             "",
-            "Read the detailed reports under the artifact map, explain the dominant mechanism behind the best and worst ablations, attach a confidence tier to every claim, then propose one concrete next experiment and one factor or coordinate change. Mark every recommendation as pending dynamics-expert review.",
+            "Read `theory_evidence.md`, `theory_research.md`, and `quant_factor_update_plan.md` together. Explain the dominant mechanism behind the best and worst ablations, keep every claim in the observation/hypothesis/candidate-insight ladder, then propose one targeted validation experiment and one external-factor update family. Mark every recommendation as pending dynamics-expert review.",
         ]
     )
     return "\n".join(lines)
@@ -825,6 +1432,8 @@ def run_research_loop(
     task_reasons: dict[str, str] = {}
     gate_decisions: list[TaskGateDecision] = []
     theory_evidence_rows: list[dict[str, object]] = []
+    theory_research_rows: list[dict[str, object]] = []
+    quant_update_rows: list[dict[str, object]] = []
     feature_cfg: DynamicsFeatureConfig | None = None
     mining_out: Path | None = None
 
@@ -955,6 +1564,46 @@ def run_research_loop(
     )
     manifest["theory_evidence"] = str(theory_evidence_path)
 
+    preanalysis_by_task = {}
+    if not preanalysis_df.empty:
+        preanalysis_by_task = {
+            str(row["task"]): row
+            for _, row in preanalysis_df.iterrows()
+        }
+    for task in task_order:
+        research_row = _task_research_analysis(
+            task,
+            preanalysis_row=preanalysis_by_task.get(task),
+            coordinate_task_df=coordinate_df[coordinate_df["task"] == task].reset_index(drop=True),
+            factor_task_df=factor_df[factor_df["task"] == task].reset_index(drop=True),
+            benchmark_task_df=benchmark_df[benchmark_df["task"] == task].reset_index(drop=True),
+            gate_decision=gate_by_task.get(task),
+        )
+        theory_research_rows.append(research_row)
+        quant_update_rows.append(
+            _task_quant_factor_update_plan(
+                task,
+                preanalysis_row=preanalysis_by_task.get(task),
+                factor_task_df=factor_df[factor_df["task"] == task].reset_index(drop=True),
+                benchmark_task_df=benchmark_df[benchmark_df["task"] == task].reset_index(drop=True),
+                theory_research_row=research_row,
+                gate_decision=gate_by_task.get(task),
+            )
+        )
+
+    theory_research_path = out_path / "theory_research.md"
+    theory_research_path.write_text(
+        _render_theory_research_report(theory_research_rows),
+        encoding="utf-8",
+    )
+    manifest["theory_research"] = str(theory_research_path)
+    quant_update_path = out_path / "quant_factor_update_plan.md"
+    quant_update_path.write_text(
+        _render_quant_factor_update_report(quant_update_rows),
+        encoding="utf-8",
+    )
+    manifest["quant_factor_update_plan"] = str(quant_update_path)
+
     confidence_rows = _build_confidence_report(
         benchmark_df=benchmark_df,
         coordinate_df=coordinate_df,
@@ -972,6 +1621,8 @@ def run_research_loop(
         confidence_rows=confidence_rows,
         gate_decisions=gate_decisions,
         theory_evidence_rows=theory_evidence_rows,
+        theory_research_rows=theory_research_rows,
+        quant_update_rows=quant_update_rows,
     )
     (out_path / "loop_summary.md").write_text(loop_summary, encoding="utf-8")
     manifest["loop_summary"] = str(out_path / "loop_summary.md")
@@ -992,4 +1643,6 @@ def run_research_loop(
         "confidence_report": confidence_rows,
         "gate_decisions": gate_decisions,
         "theory_evidence": theory_evidence_rows,
+        "theory_research": theory_research_rows,
+        "quant_factor_update_plan": quant_update_rows,
     }
