@@ -20,4 +20,9 @@
 
 - `scripts/` 负责命令行参数和运行入口
 - `src/` 负责真正的算法实现、调度和结果组织
+## Recent Implementation Updates
+
+- Shared causal readout logic now lives in `src/fsrc_sindy/factors/readout.py`, so RC and NGRC-family models can consume the same factor-driven or fast/slow readout features.
+- Reusable factor presets and library loading now live in `src/fsrc_sindy/factors/repository.py`.
+- The research loop now contains identify-mode preanalysis, task-level validation gating, and theory-aware evidence synthesis rather than only flat benchmark aggregation.
 

@@ -63,6 +63,7 @@ python scripts/run_research_loop.py --suite smoke --tasks vanderpol_smoke --out_
 
 - `analyze_results.py`
 - `merge_results.py`
+- `skill_inventory_report.py`
 
 这两个更偏结果汇总或后处理，不是主入口。
 
@@ -72,4 +73,15 @@ python scripts/run_research_loop.py --suite smoke --tasks vanderpol_smoke --out_
 2. 想看坐标好不好：`run_coordinate_analysis.py`
 3. 想挖新因子：`run_factor_mining.py`
 4. 想跑完整研究面板：`run_research_loop.py`
+## Maintenance Notes
 
+### `skill_inventory_report.py`
+
+Use this utility to compare `.agents/skills/project/` and `.claude/skills/project/`, detect missing mirrors, and spot content or metadata drift before promoting or publishing project-local skills.
+
+Example:
+```bash
+python scripts/skill_inventory_report.py --json-out runs/skill_inventory/report.json --md-out runs/skill_inventory/report.md
+```
+
+This script is intended for skill maintenance and repository hygiene, not for the main dynamics research loop.

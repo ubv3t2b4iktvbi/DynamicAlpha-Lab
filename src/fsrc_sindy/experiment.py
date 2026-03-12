@@ -22,6 +22,7 @@ def run_task(
     seed: int,
     out_dir: Path,
     model_names: Sequence[str],
+    model_contexts: dict[str, dict[str, object]] | None,
     grid_mode: str,
     tracker: ProgressTracker,
     template_factory: ReservoirTemplateFactory,
@@ -38,6 +39,15 @@ def run_task(
     rows = []
 
     for model_name in model_names:
+        model_context = dict(model_contexts.get(model_name, {})) if model_contexts is not None and model_name in model_contexts else None
+        variant_label = str(model_context.get("variant_label", model_name)) if model_context is not None else model_name
+        readout_factor_names: list[str] = []
+        if model_context is not None:
+            for spec in model_context.get("readout_factor_specs", []):
+                if isinstance(spec, dict):
+                    readout_factor_names.append(str(spec.get("name", "")))
+                else:
+                    readout_factor_names.append(str(getattr(spec, "name", spec)))
         model_spec = get_model_spec(model_name)
         t0 = time.perf_counter()
         model, val_metrics, best_cfg = select_best_model(
@@ -51,6 +61,7 @@ def run_task(
             short_train=short_train,
             progress_desc=f'{task.name}-{model_name}',
             data_dt=task.dt,
+            model_context=model_context,
         )
         train_time = time.perf_counter() - t0
 
@@ -70,7 +81,8 @@ def run_task(
             'task_tags': '|'.join(task.tags),
             'state_dim': int(sim.states.shape[1]),
             'observed_dim': 1,
-            'variant': model_name,
+            'variant': variant_label,
+            'base_model_name': model_name,
             'model_family': model_spec.family,
             'uses_fastslow': int(model_spec.uses_fastslow),
             'uses_sindy_backbone': int(model_spec.uses_sindy_backbone),
@@ -92,6 +104,9 @@ def run_task(
             'total_params': model.count_total_params(),
             'trained_params': model.count_trained_params(),
             'best_config': to_jsonable(best_cfg),
+            'readout_identifier_kind': str(model_context.get("readout_identifier_kind", "")) if model_context is not None else "",
+            'readout_factor_count': len(readout_factor_names),
+            'readout_factor_names': "; ".join(name for name in readout_factor_names if name),
         }
         row.update(val_metrics)
         row.update(one_metrics)
@@ -108,6 +123,8 @@ def run_benchmark_suite(
     seed: int,
     out_dir: str,
     model_names: Sequence[str] | None = None,
+    task_model_names: dict[str, Sequence[str]] | None = None,
+    task_model_contexts: dict[str, dict[str, dict[str, object]]] | None = None,
     grid_mode: str = 'quick',
     task_names: Sequence[str] | None = None,
 ) -> pd.DataFrame:
@@ -125,15 +142,20 @@ def run_benchmark_suite(
     model_names = list(model_names) if model_names is not None else list(DEFAULT_MODEL_NAMES)
     all_rows = []
     for task in tqdm(tasks, desc=f'suite={suite}'):
+        model_names_for_task = list(task_model_names.get(task.name, model_names)) if task_model_names is not None else list(model_names)
+        if not model_names_for_task:
+            continue
+        model_contexts_for_task = task_model_contexts.get(task.name, {}) if task_model_contexts is not None else None
         df_task = run_task(
             task=task,
             seed=seed,
             out_dir=out_path,
-            model_names=model_names,
+            model_names=model_names_for_task,
+            model_contexts=model_contexts_for_task,
             grid_mode=grid_mode,
             tracker=tracker,
             template_factory=template_factory,
         )
         all_rows.append(df_task)
-    result_df = pd.concat(all_rows, axis=0, ignore_index=True)
+    result_df = pd.concat(all_rows, axis=0, ignore_index=True) if all_rows else pd.DataFrame()
     return result_df

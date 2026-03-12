@@ -10,9 +10,7 @@ from ..models.base import BaseForecastModel
 from ..models.rc import RCConfig, ReservoirTemplateFactory
 from ..utils import ridge_solve
 from .base import DynamicsFeatureConfig, FactorSpec
-from .factor_bank import evaluate_factor_array, evaluate_factor_step
-from .feature_engine import DynamicsFeatureEngine
-from .identifiers import BaseIdentifier, make_identifier
+from .readout import CausalFactorReadout
 
 
 @dataclass(frozen=True)
@@ -105,8 +103,11 @@ class FactorAugmentedRCModel(BaseForecastModel):
         self.identifier_kind = identifier_kind
         self.template_factory = template_factory
         self.feature_cfg = feature_cfg
-        self.engine = DynamicsFeatureEngine(feature_cfg)
-        self.identifier: BaseIdentifier = make_identifier(identifier_kind, feature_cfg)
+        self.readout = CausalFactorReadout(
+            factor_specs=self.factor_specs,
+            feature_cfg=feature_cfg,
+            identifier_kind=identifier_kind,
+        )
         self.mu_ = 0.0
         self.std_ = 1.0
         self.W = None
@@ -125,34 +126,11 @@ class FactorAugmentedRCModel(BaseForecastModel):
         cand = np.tanh(pre)
         return (1.0 - self.rc_cfg.leak_rate) * r + self.rc_cfg.leak_rate * cand
 
-    def _factor_matrix(self, context: Mapping[str, np.ndarray]) -> np.ndarray:
-        if not self.factor_specs:
-            return np.zeros((len(next(iter(context.values()))), 0), dtype=float)
-        cols = [evaluate_factor_array(spec, context).reshape(-1, 1) for spec in self.factor_specs]
-        return np.hstack(cols)
-
-    def _factor_step(self, ctx: Mapping[str, float]) -> np.ndarray:
-        if not self.factor_specs:
-            return np.zeros(0, dtype=float)
-        return np.asarray([evaluate_factor_step(spec, ctx) for spec in self.factor_specs], dtype=float)
-
-    def _fit_identifier_and_context(self, y_std: np.ndarray) -> dict[str, np.ndarray]:
-        base = self.engine.build_base_sequence(y_std)
-        self.identifier.fit(base)
-        identifier_outputs = self.identifier.batch_outputs(base)
-        return self.engine.augment_with_identifier(base, identifier_outputs)
-
-    def _transform_context(self, y_std: np.ndarray) -> dict[str, np.ndarray]:
-        base = self.engine.build_base_sequence(y_std)
-        identifier_outputs = self.identifier.batch_outputs(base)
-        return self.engine.augment_with_identifier(base, identifier_outputs)
-
     def fit(self, y_train: np.ndarray):
         self.mu_ = float(np.mean(y_train))
         self.std_ = float(np.std(y_train) + 1e-12)
         y_std = ((np.asarray(y_train, dtype=float).reshape(-1) - self.mu_) / self.std_).astype(float)
-        context = self._fit_identifier_and_context(y_std)
-        factor_mat = self._factor_matrix(context)
+        _, factor_mat = self.readout.fit_transform(y_std)
         self._setup()
         r = np.zeros(self.rc_cfg.n_reservoir, dtype=float)
         X_rows = []
@@ -171,23 +149,18 @@ class FactorAugmentedRCModel(BaseForecastModel):
         self.Wout = ridge_solve(X, Y, self.rc_cfg.ridge)
         return self
 
-    def _warmup_context(self, y_hist_std: Iterable[float]) -> tuple[object, dict[str, float]]:
-        state, ctx = self.engine.warmup_state(y_hist_std)
-        identifier_ctx = self.identifier.step_outputs(ctx)
-        ctx = {**ctx, **identifier_ctx}
-        return state, ctx
-
     def rollout(self, y_hist: np.ndarray, horizon: int) -> np.ndarray:
         y_hist_std = ((np.asarray(y_hist, dtype=float).reshape(-1) - self.mu_) / self.std_).astype(float)
         self._setup() if self.W is None else None
         r = np.zeros(self.rc_cfg.n_reservoir, dtype=float)
         for v in y_hist_std:
             r = self._step(r, float(v))
-        state, ctx = self._warmup_context(y_hist_std)
+        state = self.readout.warmup(y_hist_std)
+        ctx = dict(state.context)
         y_cur = float(y_hist_std[-1])
         preds = []
         for _ in range(horizon):
-            factor_vec = self._factor_step(ctx)
+            factor_vec = self.readout.factor_step(ctx)
             parts = [r, np.array([y_cur], dtype=float)]
             if len(factor_vec) > 0:
                 parts.append(factor_vec)
@@ -196,15 +169,13 @@ class FactorAugmentedRCModel(BaseForecastModel):
             y_next = float(aug @ self.Wout)
             preds.append(y_next)
             r = self._step(r, y_next)
-            ctx = self.engine.step(state, y_next)
-            ctx = {**ctx, **self.identifier.step_outputs(ctx)}
+            ctx = self.readout.advance(state, y_next)
             y_cur = y_next
         return np.asarray(preds, dtype=float) * self.std_ + self.mu_
 
     def one_step_metrics(self, series: np.ndarray, burn_in: int):
         y_std = ((np.asarray(series, dtype=float).reshape(-1) - self.mu_) / self.std_).astype(float)
-        context = self._transform_context(y_std)
-        factor_mat = self._factor_matrix(context)
+        _, factor_mat = self.readout.transform(y_std)
         self._setup() if self.W is None else None
         r = np.zeros(self.rc_cfg.n_reservoir, dtype=float)
         preds = []
@@ -223,12 +194,12 @@ class FactorAugmentedRCModel(BaseForecastModel):
         return {f"one_step_{k}": v for k, v in metric_dict(np.asarray(truth), np.asarray(preds)).items()}
 
     def count_total_params(self) -> int:
-        extra = 2 + len(self.factor_specs)
+        extra = 2 + self.readout.dim
         return int(self.rc_cfg.n_reservoir + self.rc_cfg.n_reservoir * self.rc_cfg.n_reservoir + self.rc_cfg.n_reservoir + (self.rc_cfg.n_reservoir + extra))
 
     def count_trained_params(self) -> int:
-        extra = 2 + len(self.factor_specs)
+        extra = 2 + self.readout.dim
         return int(self.rc_cfg.n_reservoir + extra)
 
     def effective_dim(self) -> int:
-        return int(self.rc_cfg.n_reservoir + len(self.factor_specs))
+        return int(self.rc_cfg.n_reservoir + self.readout.dim)

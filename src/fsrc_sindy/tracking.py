@@ -22,7 +22,8 @@ class ProgressTracker:
         df = pd.DataFrame(self.rows)
         df.to_csv(self.results_fp, index=False)
         summary_cols = [c for c in [
-            'task', 'system', 'task_family', 'task_regime', 'state_dim', 'variant', 'model_family',
+            'task', 'system', 'task_family', 'task_regime', 'state_dim', 'variant', 'base_model_name', 'model_family',
+            'readout_identifier_kind', 'readout_factor_count', 'readout_factor_names',
             'train_time_sec', 'rollout_eval_time_sec',
             'speed_us_per_step', 'effective_dim', 'trained_params', 'total_params',
             'one_step_rmse', 'rmse@10', 'rmse@50', 'rmse@100', 'acf_rmse', 'psd_rmse'

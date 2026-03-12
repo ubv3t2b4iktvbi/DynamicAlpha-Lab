@@ -385,3 +385,9 @@ pip install -r requirements.txt
 - 新增模型时，优先接入 `selection.py` 的 model group，而不是只加独立脚本
 - 新增因子时，务必同步更新代码、归档输出和人工审核语义
 - 新增研究套路时，优先接到 `run_research_loop.py`，避免再形成平行入口
+## Recent Maintenance Updates
+
+- The factor and readout stack now has a reusable causal readout layer in `src/fsrc_sindy/factors/readout.py` plus a reusable factor registry in `src/fsrc_sindy/factors/repository.py`. This lets RC and NGRC-family models share the same fast/slow or factor-based readout features instead of duplicating bespoke logic.
+- `src/fsrc_sindy/research/loop.py` now adds an identify-mode preanalysis gate before validation, writes gate decisions into `validation_gate.json`, and produces a theory-oriented evidence report in `theory_evidence.md`.
+- `src/fsrc_sindy/experiment.py` now supports task-specific model lists and per-task model context so gated benchmark runs can vary by task without forking the benchmark runner.
+- `scripts/skill_inventory_report.py` and the project-local maintenance skills under `.agents/skills/project/` support ongoing repository upkeep, including diff summarization, README syncing, safer GitHub publishing, and repo-aware vibe coding.

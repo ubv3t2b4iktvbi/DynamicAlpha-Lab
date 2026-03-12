@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 
+from ..factors.base import DynamicsFeatureConfig, FactorSpec
+from ..factors.readout import CausalFactorReadout, ReadoutState
+from ..factors.repository import fastslow_readout_specs
 from ..fastslow import CausalFastSlowEncoder, FastSlowConfig
 from ..library import build_poly_library
 from ..metrics import metric_dict
@@ -76,11 +79,20 @@ class PureNGRCModel(BaseForecastModel):
         cfg: NGRCConfig,
         fs_cfg: Optional[FastSlowConfig] = None,
         use_fastslow_readout: bool = False,
+        readout_factor_specs: Sequence[FactorSpec] | None = None,
+        readout_identifier_kind: str | None = None,
+        readout_feature_cfg: DynamicsFeatureConfig | None = None,
     ):
         self.cfg = cfg
         self.use_fastslow_readout = use_fastslow_readout
         self.fs_cfg = fs_cfg if fs_cfg is not None else (cfg.fs_cfg if cfg.fs_cfg is not None else FastSlowConfig(t0=4, slow_scales=(8, 16, 32)))
-        self.encoder = CausalFastSlowEncoder(self.fs_cfg)
+        factor_specs = list(readout_factor_specs) if readout_factor_specs is not None else (fastslow_readout_specs() if use_fastslow_readout else [])
+        self.readout = CausalFactorReadout(
+            factor_specs=factor_specs,
+            feature_cfg=readout_feature_cfg,
+            identifier_kind=readout_identifier_kind,
+            fastslow_cfg=self.fs_cfg,
+        )
         self.delay = _DelayBuilder(cfg.n_delays, cfg.stride)
 
         self.mu_ = 0.0
@@ -88,7 +100,7 @@ class PureNGRCModel(BaseForecastModel):
         self.coef_: Optional[np.ndarray] = None
         self.n_features_: int = 0
 
-    def _build_design(self, ys: np.ndarray, feats: Optional[dict[str, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+    def _build_design(self, ys: np.ndarray, factor_mat: Optional[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
         base_rows = []
         targets = []
         start = max(self.cfg.washout, self.delay.max_lag)
@@ -100,12 +112,8 @@ class PureNGRCModel(BaseForecastModel):
         base = np.vstack(base_rows)
         base = np.asarray(safe_clip(base, self.cfg.feature_clip), dtype=float)
         Phi, _ = build_poly_library(base, [f'z{i}' for i in range(base.shape[1])], poly_order=self.cfg.poly_order)
-        if self.use_fastslow_readout:
-            extra = np.column_stack([
-                feats['fast'][start:len(ys) - 1],
-                feats['slow'][start:len(ys) - 1],
-                feats['m'][start:len(ys) - 1],
-            ]).astype(float)
+        if factor_mat is not None and factor_mat.shape[1] > 0:
+            extra = np.asarray(factor_mat[start:len(ys) - 1], dtype=float)
             X = np.hstack([Phi, extra])
         else:
             X = Phi
@@ -116,22 +124,20 @@ class PureNGRCModel(BaseForecastModel):
     def _feature_row(
         self,
         delay_row: np.ndarray,
-        full_state: Optional[dict] = None,
-        feats: Optional[dict[str, np.ndarray]] = None,
+        readout_state: Optional[ReadoutState] = None,
+        factor_mat: Optional[np.ndarray] = None,
         t: Optional[int] = None,
     ) -> np.ndarray:
         delay_row = np.asarray(safe_clip(delay_row, self.cfg.feature_clip), dtype=float).reshape(1, -1)
         Phi, _ = build_poly_library(delay_row, [f'z{i}' for i in range(delay_row.shape[1])], poly_order=self.cfg.poly_order)
         row = Phi.reshape(-1)
-        if self.use_fastslow_readout:
-            if full_state is not None:
-                fast = float(full_state['f2'])
-                slow = float(np.mean(full_state['slows']))
-                extra = np.array([fast, slow, fast - slow], dtype=float)
-            elif feats is not None and t is not None:
-                extra = np.array([feats['fast'][t], feats['slow'][t], feats['m'][t]], dtype=float)
+        if self.readout.dim > 0:
+            if factor_mat is not None and t is not None:
+                extra = np.asarray(factor_mat[t], dtype=float)
+            elif readout_state is not None:
+                extra = self.readout.factor_step(readout_state.context)
             else:
-                raise ValueError('fast/slow readout requested but no state provided')
+                raise ValueError('factor readout requested but no state provided')
             row = np.concatenate([row, extra])
         row = np.asarray(safe_clip(row, self.cfg.feature_clip), dtype=float)
         return row
@@ -140,8 +146,8 @@ class PureNGRCModel(BaseForecastModel):
         self.mu_ = float(np.mean(y_train))
         self.std_ = float(np.std(y_train) + 1e-12)
         ys = ((np.asarray(y_train, dtype=float).reshape(-1) - self.mu_) / self.std_).astype(float)
-        feats = self.encoder.build_feature_sequence(ys) if self.use_fastslow_readout else None
-        X, Y = self._build_design(ys, feats)
+        _, factor_mat = self.readout.fit_transform(ys)
+        X, Y = self._build_design(ys, factor_mat)
         self.coef_ = ridge_solve(X, Y, self.cfg.ridge)
         self.n_features_ = int(X.shape[1])
         return self
@@ -151,26 +157,26 @@ class PureNGRCModel(BaseForecastModel):
         if len(ys) <= self.delay.max_lag:
             raise ValueError('history too short for NGRC rollout')
         hist = deque([float(v) for v in ys], maxlen=max(len(ys), self.delay.max_lag + 1))
-        full_state = self.encoder.init_full_state(ys) if self.use_fastslow_readout else None
+        readout_state = self.readout.warmup(ys) if self.readout.dim > 0 else None
         preds = []
         for _ in range(horizon):
             delay_row = self.delay.row_from_deque(hist)
-            x = self._feature_row(delay_row, full_state=full_state)
+            x = self._feature_row(delay_row, readout_state=readout_state)
             y_next = float(safe_clip(x @ self.coef_, self.cfg.y_clip))
             preds.append(y_next)
             hist.append(y_next)
-            if self.use_fastslow_readout:
-                self.encoder.advance_full(full_state, y_next)
+            if readout_state is not None:
+                self.readout.advance(readout_state, y_next)
         return np.asarray(preds, dtype=float) * self.std_ + self.mu_
 
     def one_step_metrics(self, series: np.ndarray, burn_in: int):
         ys = ((np.asarray(series, dtype=float).reshape(-1) - self.mu_) / self.std_).astype(float)
-        feats = self.encoder.build_feature_sequence(ys) if self.use_fastslow_readout else None
+        _, factor_mat = self.readout.transform(ys)
         start = max(int(burn_in), self.cfg.washout, self.delay.max_lag)
         preds, truth = [], []
         for t in range(start, len(ys) - 1):
             delay_row = self.delay.row_from_series(ys, t)
-            x = self._feature_row(delay_row, feats=feats, t=t)
+            x = self._feature_row(delay_row, factor_mat=factor_mat, t=t)
             pred_std = float(safe_clip(x @ self.coef_, self.cfg.y_clip))
             preds.append(pred_std * self.std_ + self.mu_)
             truth.append(ys[t + 1] * self.std_ + self.mu_)
@@ -193,12 +199,21 @@ class HybridRCNGRCModel(BaseForecastModel):
         template_factory: ReservoirTemplateFactory,
         fs_cfg: Optional[FastSlowConfig] = None,
         use_fastslow_readout: bool = True,
+        readout_factor_specs: Sequence[FactorSpec] | None = None,
+        readout_identifier_kind: str | None = None,
+        readout_feature_cfg: DynamicsFeatureConfig | None = None,
     ):
         self.cfg = cfg
         self.template_factory = template_factory
         self.use_fastslow_readout = use_fastslow_readout
         self.fs_cfg = fs_cfg if fs_cfg is not None else (cfg.fs_cfg if cfg.fs_cfg is not None else FastSlowConfig(t0=4, slow_scales=(8, 16, 32)))
-        self.encoder = CausalFastSlowEncoder(self.fs_cfg)
+        factor_specs = list(readout_factor_specs) if readout_factor_specs is not None else (fastslow_readout_specs() if use_fastslow_readout else [])
+        self.readout = CausalFactorReadout(
+            factor_specs=factor_specs,
+            feature_cfg=readout_feature_cfg,
+            identifier_kind=readout_identifier_kind,
+            fastslow_cfg=self.fs_cfg,
+        )
         self.delay = _DelayBuilder(cfg.n_delays, cfg.stride)
 
         self.mu_ = 0.0
@@ -223,22 +238,20 @@ class HybridRCNGRCModel(BaseForecastModel):
     def _ngrc_row(
         self,
         delay_row: np.ndarray,
-        full_state: Optional[dict] = None,
-        feats: Optional[dict[str, np.ndarray]] = None,
+        readout_state: Optional[ReadoutState] = None,
+        factor_mat: Optional[np.ndarray] = None,
         t: Optional[int] = None,
     ) -> np.ndarray:
         delay_row = np.asarray(safe_clip(delay_row, self.cfg.feature_clip), dtype=float).reshape(1, -1)
         Phi, _ = build_poly_library(delay_row, [f'z{i}' for i in range(delay_row.shape[1])], poly_order=self.cfg.poly_order)
         row = Phi.reshape(-1)
-        if self.use_fastslow_readout:
-            if full_state is not None:
-                fast = float(full_state['f2'])
-                slow = float(np.mean(full_state['slows']))
-                extra = np.array([fast, slow, fast - slow], dtype=float)
-            elif feats is not None and t is not None:
-                extra = np.array([feats['fast'][t], feats['slow'][t], feats['m'][t]], dtype=float)
+        if self.readout.dim > 0:
+            if factor_mat is not None and t is not None:
+                extra = np.asarray(factor_mat[t], dtype=float)
+            elif readout_state is not None:
+                extra = self.readout.factor_step(readout_state.context)
             else:
-                raise ValueError('fast/slow readout requested but no state provided')
+                raise ValueError('factor readout requested but no state provided')
             row = np.concatenate([row, extra])
         row = np.asarray(safe_clip(row, self.cfg.feature_clip), dtype=float)
         return row
@@ -247,11 +260,11 @@ class HybridRCNGRCModel(BaseForecastModel):
         self,
         r: np.ndarray,
         delay_row: np.ndarray,
-        full_state: Optional[dict] = None,
-        feats: Optional[dict[str, np.ndarray]] = None,
+        readout_state: Optional[ReadoutState] = None,
+        factor_mat: Optional[np.ndarray] = None,
         t: Optional[int] = None,
     ) -> np.ndarray:
-        ngrc_row = self._ngrc_row(delay_row, full_state=full_state, feats=feats, t=t)
+        ngrc_row = self._ngrc_row(delay_row, readout_state=readout_state, factor_mat=factor_mat, t=t)
         return np.concatenate([r, ngrc_row])
 
     def fit(self, y_train: np.ndarray) -> 'HybridRCNGRCModel':
@@ -259,7 +272,7 @@ class HybridRCNGRCModel(BaseForecastModel):
         self.std_ = float(np.std(y_train) + 1e-12)
         ys = ((np.asarray(y_train, dtype=float).reshape(-1) - self.mu_) / self.std_).astype(float)
         self._setup()
-        feats = self.encoder.build_feature_sequence(ys) if self.use_fastslow_readout else None
+        _, factor_mat = self.readout.fit_transform(ys)
         r = np.zeros(self.cfg.n_reservoir, dtype=float)
         X_rows, Y = [], []
         start = max(self.cfg.washout, self.delay.max_lag)
@@ -267,7 +280,7 @@ class HybridRCNGRCModel(BaseForecastModel):
             r = self._step(r, ys[t])
             if t >= start:
                 delay_row = self.delay.row_from_series(ys, t)
-                aug = self._aug(r, delay_row, feats=feats, t=t)
+                aug = self._aug(r, delay_row, factor_mat=factor_mat, t=t)
                 X_rows.append(aug)
                 Y.append(float(ys[t + 1]))
         X = np.vstack(X_rows)
@@ -282,22 +295,22 @@ class HybridRCNGRCModel(BaseForecastModel):
         for v in ys:
             r = self._step(r, float(v))
         hist = deque([float(v) for v in ys], maxlen=max(len(ys), self.delay.max_lag + 1))
-        full_state = self.encoder.init_full_state(ys) if self.use_fastslow_readout else None
+        readout_state = self.readout.warmup(ys) if self.readout.dim > 0 else None
         preds = []
         for _ in range(horizon):
             delay_row = self.delay.row_from_deque(hist)
-            aug = self._aug(r, delay_row, full_state=full_state)
+            aug = self._aug(r, delay_row, readout_state=readout_state)
             y_next = float(safe_clip(aug @ self.Wout, self.cfg.y_clip))
             preds.append(y_next)
             r = self._step(r, y_next)
             hist.append(y_next)
-            if self.use_fastslow_readout:
-                self.encoder.advance_full(full_state, y_next)
+            if readout_state is not None:
+                self.readout.advance(readout_state, y_next)
         return np.asarray(preds, dtype=float) * self.std_ + self.mu_
 
     def one_step_metrics(self, series: np.ndarray, burn_in: int):
         ys = ((np.asarray(series, dtype=float).reshape(-1) - self.mu_) / self.std_).astype(float)
-        feats = self.encoder.build_feature_sequence(ys) if self.use_fastslow_readout else None
+        _, factor_mat = self.readout.transform(ys)
         r = np.zeros(self.cfg.n_reservoir, dtype=float)
         preds, truth = [], []
         start = max(int(burn_in), self.cfg.washout, self.delay.max_lag)
@@ -305,7 +318,7 @@ class HybridRCNGRCModel(BaseForecastModel):
             r = self._step(r, ys[t])
             if t >= start:
                 delay_row = self.delay.row_from_series(ys, t)
-                aug = self._aug(r, delay_row, feats=feats, t=t)
+                aug = self._aug(r, delay_row, factor_mat=factor_mat, t=t)
                 pred_std = float(safe_clip(aug @ self.Wout, self.cfg.y_clip))
                 preds.append(pred_std * self.std_ + self.mu_)
                 truth.append(ys[t + 1] * self.std_ + self.mu_)

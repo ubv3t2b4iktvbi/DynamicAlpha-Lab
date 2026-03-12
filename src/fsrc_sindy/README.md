@@ -107,4 +107,11 @@
 - 不要只改模型而不接入 `selection.py`
 - 不要只改 factor scoring 而不更新 review / archive 产物
 - 不要绕开 `research/loop.py` 再平行造一个总控入口
+## Recent Package Updates
+
+- `experiment.py` now supports task-specific model lists and per-task model context, which is used by gated benchmark execution.
+- `models/rc.py` and `models/ngrc.py` now reuse a shared causal readout layer instead of maintaining separate fast/slow feature plumbing.
+- `factors/readout.py` provides the shared causal readout encoder for mined factors and legacy fast/slow readout features.
+- `factors/repository.py` provides reusable factor presets, a central registry, and selected-library loading helpers.
+- `research/loop.py` now includes identify-mode preanalysis, validation gating, and theory-aware evidence synthesis outputs.
 

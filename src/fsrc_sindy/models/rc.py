@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 from scipy import sparse
 from scipy.sparse import linalg as spla
 
-from ..fastslow import CausalFastSlowEncoder, FastSlowConfig
+from ..factors.base import DynamicsFeatureConfig, FactorSpec
+from ..factors.readout import CausalFactorReadout, ReadoutState
+from ..factors.repository import fastslow_readout_specs
+from ..fastslow import FastSlowConfig
 from ..metrics import metric_dict
 from ..utils import ridge_solve
 from .base import BaseForecastModel
@@ -76,12 +79,21 @@ class PureRCModel(BaseForecastModel):
         template_factory: ReservoirTemplateFactory,
         fs_cfg: Optional[FastSlowConfig] = None,
         use_fastslow_readout: bool = False,
+        readout_factor_specs: Sequence[FactorSpec] | None = None,
+        readout_identifier_kind: str | None = None,
+        readout_feature_cfg: DynamicsFeatureConfig | None = None,
     ):
         self.cfg = cfg
         self.template_factory = template_factory
         self.use_fastslow_readout = use_fastslow_readout
         self.fs_cfg = fs_cfg if fs_cfg is not None else (cfg.fs_cfg if cfg.fs_cfg is not None else FastSlowConfig(t0=4, slow_scales=(8, 16, 32)))
-        self.encoder = CausalFastSlowEncoder(self.fs_cfg)
+        factor_specs = list(readout_factor_specs) if readout_factor_specs is not None else (fastslow_readout_specs() if use_fastslow_readout else [])
+        self.readout = CausalFactorReadout(
+            factor_specs=factor_specs,
+            feature_cfg=readout_feature_cfg,
+            identifier_kind=readout_identifier_kind,
+            fastslow_cfg=self.fs_cfg,
+        )
 
         self.mu_ = 0.0
         self.std_ = 1.0
@@ -105,20 +117,18 @@ class PureRCModel(BaseForecastModel):
         self,
         r: np.ndarray,
         y_t: float,
-        feats: Optional[dict[str, np.ndarray]] = None,
+        factor_mat: Optional[np.ndarray] = None,
         t: Optional[int] = None,
-        full_state: Optional[dict[str, Any]] = None,
+        readout_state: Optional[ReadoutState] = None,
     ) -> np.ndarray:
         parts = [r, np.array([y_t], dtype=float)]
-        if self.use_fastslow_readout:
-            if feats is not None and t is not None:
-                parts.append(np.array([feats["fast"][t], feats["slow"][t], feats["m"][t]], dtype=float))
-            elif full_state is not None:
-                fast = float(full_state["f2"])
-                slow = float(np.mean(full_state["slows"]))
-                parts.append(np.array([fast, slow, fast - slow], dtype=float))
+        if self.readout.dim > 0:
+            if factor_mat is not None and t is not None:
+                parts.append(np.asarray(factor_mat[t], dtype=float))
+            elif readout_state is not None:
+                parts.append(self.readout.factor_step(readout_state.context))
             else:
-                raise ValueError("fast/slow readout requires either sequence features or full state")
+                raise ValueError("factor readout requires either sequence features or causal state")
         parts.append(np.array([1.0], dtype=float))
         return np.concatenate(parts)
 
@@ -127,14 +137,14 @@ class PureRCModel(BaseForecastModel):
         self.std_ = float(np.std(y_train) + 1e-12)
         ys = ((y_train - self.mu_) / self.std_).reshape(-1)
         self._setup()
-        feats = self.encoder.build_feature_sequence(ys) if self.use_fastslow_readout else None
+        _, factor_mat = self.readout.fit_transform(ys)
         r = np.zeros(self.cfg.n_reservoir, dtype=float)
         X_rows = []
         Y = []
         for t in range(len(ys) - 1):
             r = self._step(r, ys[t])
             if t >= self.cfg.washout:
-                X_rows.append(self._readout_aug(r, ys[t], feats=feats, t=t))
+                X_rows.append(self._readout_aug(r, ys[t], factor_mat=factor_mat, t=t))
                 Y.append(ys[t + 1])
         X = np.vstack(X_rows)
         Y = np.asarray(Y, dtype=float)
@@ -144,25 +154,25 @@ class PureRCModel(BaseForecastModel):
     def rollout(self, y_hist: np.ndarray, horizon: int) -> np.ndarray:
         y_hist_std = ((np.asarray(y_hist, dtype=float).reshape(-1) - self.mu_) / self.std_).astype(float)
         r = np.zeros(self.cfg.n_reservoir, dtype=float)
-        full_state = self.encoder.init_full_state(y_hist_std) if self.use_fastslow_readout else None
+        readout_state = self.readout.warmup(y_hist_std) if self.readout.dim > 0 else None
         for v in y_hist_std:
             r = self._step(r, float(v))
         y_cur = float(y_hist_std[-1])
         preds = []
         for _ in range(horizon):
-            aug = self._readout_aug(r, y_cur, full_state=full_state)
+            aug = self._readout_aug(r, y_cur, readout_state=readout_state)
             y_next = float(aug @ self.Wout)
             preds.append(y_next)
             r = self._step(r, y_next)
             y_cur = y_next
-            if self.use_fastslow_readout:
-                self.encoder.advance_full(full_state, y_next)
+            if readout_state is not None:
+                self.readout.advance(readout_state, y_next)
         preds = np.asarray(preds, dtype=float)
         return preds * self.std_ + self.mu_
 
     def one_step_metrics(self, series: np.ndarray, burn_in: int):
         ys = ((np.asarray(series, dtype=float).reshape(-1) - self.mu_) / self.std_).astype(float)
-        feats = self.encoder.build_feature_sequence(ys) if self.use_fastslow_readout else None
+        _, factor_mat = self.readout.transform(ys)
         r = np.zeros(self.cfg.n_reservoir, dtype=float)
         preds = []
         truth = []
@@ -170,17 +180,17 @@ class PureRCModel(BaseForecastModel):
         for t in range(len(ys) - 1):
             r = self._step(r, ys[t])
             if t >= start_eval:
-                pred_std = float(self._readout_aug(r, ys[t], feats=feats, t=t) @ self.Wout)
+                pred_std = float(self._readout_aug(r, ys[t], factor_mat=factor_mat, t=t) @ self.Wout)
                 preds.append(pred_std * self.std_ + self.mu_)
                 truth.append(ys[t + 1] * self.std_ + self.mu_)
         return {f"one_step_{k}": v for k, v in metric_dict(np.asarray(truth), np.asarray(preds)).items()}
 
     def count_total_params(self) -> int:
-        extra = 4 if self.use_fastslow_readout else 2
+        extra = 2 + self.readout.dim
         return int(self.cfg.n_reservoir + self.cfg.n_reservoir * self.cfg.n_reservoir + self.cfg.n_reservoir + (self.cfg.n_reservoir + extra))
 
     def count_trained_params(self) -> int:
-        extra = 4 if self.use_fastslow_readout else 2
+        extra = 2 + self.readout.dim
         return int(self.cfg.n_reservoir + extra)
 
     def effective_dim(self) -> int:

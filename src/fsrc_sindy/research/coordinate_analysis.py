@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -530,6 +530,7 @@ def run_coordinate_analysis_suite(
     seed: int = 123,
     task_names: Sequence[str] | None = None,
     coordinate_kinds: Sequence[str] = ("raw", "delay", "fastslow", "factor"),
+    task_coordinate_kinds: Mapping[str, Sequence[str]] | None = None,
     delay_dim: int = 8,
     sample_count: int = 24,
     local_k: int = 64,
@@ -550,11 +551,12 @@ def run_coordinate_analysis_suite(
     for task in tqdm(tasks, desc=f"coordinate_analysis[{suite}]"):
         task_dir = out_path / task.name
         ensure_dir(task_dir)
+        task_kinds = tuple(task_coordinate_kinds.get(task.name, coordinate_kinds)) if task_coordinate_kinds is not None else tuple(coordinate_kinds)
         all_rows.append(
             run_coordinate_analysis_for_task(
                 task=task,
                 out_dir=task_dir,
-                coordinate_kinds=coordinate_kinds,
+                coordinate_kinds=task_kinds,
                 delay_dim=delay_dim,
                 seed=seed,
                 sample_count=sample_count,

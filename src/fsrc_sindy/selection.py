@@ -6,6 +6,7 @@ from typing import Any, Sequence
 import numpy as np
 from tqdm.auto import tqdm
 
+from .factors.base import DynamicsFeatureConfig, FactorSpec
 from .fastslow import FastSlowConfig
 from .metrics import evaluate_horizons
 from .models import (
@@ -53,8 +54,10 @@ class SlowResidualSearchConfig:
 MODEL_SPECS: dict[str, ModelSpec] = {
     "rc_raw": ModelSpec("reservoir", False, False, True, False, "none", "RC baseline with direct readout."),
     "rc_fastslow_readout": ModelSpec("reservoir", True, False, True, False, "none", "RC baseline with fast/slow readout features."),
+    "rc_factor_readout": ModelSpec("reservoir", False, False, True, False, "none", "RC baseline with task-selected factor readout."),
     "ngrc_raw": ModelSpec("ngrc", False, False, False, True, "none", "NGRC/NVAR baseline on delay coordinates."),
     "ngrc_fastslow_readout": ModelSpec("ngrc", True, False, False, True, "none", "NGRC augmented with fast/slow readout features."),
+    "ngrc_factor_readout": ModelSpec("ngrc", False, False, False, True, "none", "NGRC baseline with task-selected factor readout."),
     "hybrid_rc_ngrc_fastslow": ModelSpec("hybrid_memory", True, False, True, True, "none", "Joint RC + NGRC readout with fast/slow features."),
     "sindy_full": ModelSpec("sindy", True, False, False, False, "none", "Full observable SINDy proxy built from scalar fast/slow features."),
     "slow_sindy_only": ModelSpec("structured_sindy", True, True, False, False, "none", "Slow manifold SINDy backbone without residual closure."),
@@ -340,15 +343,57 @@ def build_residual_rc_grid(mode: str = "quick") -> list[ResidualRCConfig]:
     return out
 
 
+def _coerce_factor_specs(payload: Any) -> list[FactorSpec]:
+    if payload is None:
+        return []
+    specs: list[FactorSpec] = []
+    for item in payload:
+        if isinstance(item, FactorSpec):
+            specs.append(item)
+        elif isinstance(item, dict):
+            specs.append(FactorSpec(**item))
+        else:
+            raise TypeError(f"Unsupported factor spec payload: {type(item)!r}")
+    return specs
+
+
+def _coerce_feature_cfg(payload: Any) -> DynamicsFeatureConfig | None:
+    if payload is None or isinstance(payload, DynamicsFeatureConfig):
+        return payload
+    if isinstance(payload, dict):
+        return DynamicsFeatureConfig(**payload)
+    raise TypeError(f"Unsupported feature config payload: {type(payload)!r}")
+
+
+def _factor_readout_context(
+    model_name: str,
+    model_context: dict[str, Any] | None,
+) -> tuple[list[FactorSpec], str, DynamicsFeatureConfig | None]:
+    if model_context is None:
+        raise ValueError(f"{model_name} requires model_context with task-selected readout factors")
+    factor_specs = _coerce_factor_specs(model_context.get("readout_factor_specs"))
+    identifier_kind = str(model_context.get("readout_identifier_kind", "")).strip()
+    feature_cfg = _coerce_feature_cfg(model_context.get("readout_feature_cfg"))
+    if not factor_specs:
+        raise ValueError(f"{model_name} requires at least one selected readout factor")
+    if not identifier_kind:
+        raise ValueError(f"{model_name} requires readout_identifier_kind in model_context")
+    return factor_specs, identifier_kind, feature_cfg
+
+
 def get_search_space(model_name: str, grid_mode: str, short_train: bool, data_dt: float) -> list[Any]:
     if model_name == "rc_raw":
         return build_rc_grid(grid_mode)
     if model_name == "rc_fastslow_readout":
         return with_fastslow_cfgs(build_rc_grid(grid_mode), build_fastslow_grid(data_dt=data_dt, mode=grid_mode, short_train=short_train))
+    if model_name == "rc_factor_readout":
+        return build_rc_grid(grid_mode)
     if model_name == "ngrc_raw":
         return build_ngrc_grid(grid_mode, short_train=short_train)
     if model_name == "ngrc_fastslow_readout":
         return with_fastslow_cfgs(build_ngrc_grid(grid_mode, short_train=short_train), build_fastslow_grid(data_dt=data_dt, mode=grid_mode, short_train=short_train))
+    if model_name == "ngrc_factor_readout":
+        return build_ngrc_grid(grid_mode, short_train=short_train)
     if model_name == "hybrid_rc_ngrc_fastslow":
         return with_fastslow_cfgs(build_rc_ngrc_grid(grid_mode, short_train=short_train), build_fastslow_grid(data_dt=data_dt, mode=grid_mode, short_train=short_train))
     if model_name == "sindy_full":
@@ -382,16 +427,43 @@ def get_search_space(model_name: str, grid_mode: str, short_train: bool, data_dt
     raise ValueError(f"Unknown model_name={model_name}")
 
 
-def instantiate_model(model_name: str, cfg: Any, template_factory: ReservoirTemplateFactory, short_train: bool):
+def instantiate_model(
+    model_name: str,
+    cfg: Any,
+    template_factory: ReservoirTemplateFactory,
+    short_train: bool,
+    model_context: dict[str, Any] | None = None,
+):
     default_slow_cfg = build_slow_cfg_grid(data_dt=1.0, short_train=short_train, mode="quick")[0]
     if model_name == "rc_raw":
         return PureRCModel(cfg=cfg, template_factory=template_factory, fs_cfg=default_slow_cfg.fs_cfg, use_fastslow_readout=False)
     if model_name == "rc_fastslow_readout":
         return PureRCModel(cfg=cfg, template_factory=template_factory, fs_cfg=getattr(cfg, "fs_cfg", None), use_fastslow_readout=True)
+    if model_name == "rc_factor_readout":
+        factor_specs, identifier_kind, feature_cfg = _factor_readout_context(model_name, model_context)
+        return PureRCModel(
+            cfg=cfg,
+            template_factory=template_factory,
+            fs_cfg=getattr(cfg, "fs_cfg", None) or default_slow_cfg.fs_cfg,
+            use_fastslow_readout=False,
+            readout_factor_specs=factor_specs,
+            readout_identifier_kind=identifier_kind,
+            readout_feature_cfg=feature_cfg,
+        )
     if model_name == "ngrc_raw":
         return PureNGRCModel(cfg=cfg, fs_cfg=default_slow_cfg.fs_cfg, use_fastslow_readout=False)
     if model_name == "ngrc_fastslow_readout":
         return PureNGRCModel(cfg=cfg, fs_cfg=getattr(cfg, "fs_cfg", None), use_fastslow_readout=True)
+    if model_name == "ngrc_factor_readout":
+        factor_specs, identifier_kind, feature_cfg = _factor_readout_context(model_name, model_context)
+        return PureNGRCModel(
+            cfg=cfg,
+            fs_cfg=getattr(cfg, "fs_cfg", None) or default_slow_cfg.fs_cfg,
+            use_fastslow_readout=False,
+            readout_factor_specs=factor_specs,
+            readout_identifier_kind=identifier_kind,
+            readout_feature_cfg=feature_cfg,
+        )
     if model_name == "hybrid_rc_ngrc_fastslow":
         return HybridRCNGRCModel(cfg=cfg, template_factory=template_factory, fs_cfg=getattr(cfg, "fs_cfg", None), use_fastslow_readout=True)
     if model_name == "sindy_full":
@@ -443,6 +515,7 @@ def select_best_model(
     short_train: bool,
     progress_desc: str,
     data_dt: float,
+    model_context: dict[str, Any] | None = None,
 ):
     search_space = get_search_space(model_name=model_name, grid_mode=grid_mode, short_train=short_train, data_dt=data_dt)
     best_model = None
@@ -453,7 +526,13 @@ def select_best_model(
     future = y_val[1:1 + max(score_horizons)]
     y_scale = float(np.std(y_train) + 1e-12)
     for cfg in tqdm(search_space, desc=progress_desc, leave=False):
-        model = instantiate_model(model_name, cfg, template_factory, short_train=short_train).fit(y_train)
+        model = instantiate_model(
+            model_name,
+            cfg,
+            template_factory,
+            short_train=short_train,
+            model_context=model_context,
+        ).fit(y_train)
         metrics = evaluate_horizons(model, context, future, score_horizons)
         score = validation_score(metrics, score_horizons=score_horizons, y_scale=y_scale)
         if best_model is None or score < best_score:
