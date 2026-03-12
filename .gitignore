@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+
+# Experiment outputs
+runs/
+data/factorlib/raw/
+data/factorlib/selected/
+*.npz
+*.csv
+*.json
+
+# Local notebooks / scratch
+.ipynb_checkpoints/
+
+# Editors
+.DS_Store
+.vscode/
+.idea/

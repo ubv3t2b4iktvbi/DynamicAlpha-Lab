@@ -1,0 +1,40 @@
+factor_mining:
+  mode: accumulate
+  identifier_kinds:
+    - sindy_slow
+    - spline_kan_like
+  screening_ridge: 1.0e-5
+  property_weight_strength: 0.2
+  koopman_weight_strength: 0.15
+  property_prescreen_top_k: 16
+  full_library_search: true
+  screen_top_m: 12
+  max_selected_factors: 4
+  min_score_improvement: 1.0e-3
+  score_horizons: [10, 50]
+  context_len: 200
+  random_seed: 123
+  include_pairwise_mutations: true
+  max_pairwise_mutations: 12
+
+rc:
+  n_reservoir: 200
+  spectral_radius: 0.95
+  input_scale: 0.5
+  leak_rate: 0.7
+  ridge: 1.0e-5
+  sparsity: 0.05
+  washout: 100
+
+features:
+  fast_window: 10.0
+  slow_windows: [14.0, 28.0, 57.0, 114.0]
+  scale_window: 28.0
+  scale_long_window: 114.0
+  energy_window: 20.0
+  energy_long_window: 80.0
+  susceptibility_window: 28.0
+  susceptibility_long_window: 114.0
+  clip: 25.0
+  critical_shrink: 1.5
+  eps: 1.0e-6
