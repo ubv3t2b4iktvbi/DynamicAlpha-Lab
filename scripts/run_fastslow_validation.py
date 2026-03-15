@@ -12,7 +12,28 @@ from fsrc_sindy.research import run_fastslow_validation
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a theory-focused fast/slow validation loop and write a compact evidence report.")
-    parser.add_argument("--suite", type=str, default="fastslow_theory", choices=["fastslow_smoke", "fastslow_theory", "fastslow_sparse_theory", "smoke", "common", "hard", "highdim", "highdim_theory", "all", "research"])
+    parser.add_argument(
+        "--suite",
+        type=str,
+        default="fastslow_theory",
+        choices=[
+            "fastslow_smoke",
+            "fastslow_theory",
+            "fastslow_sparse_theory",
+            "fastslow_finance_theory",
+            "fastslow_gating_sweep",
+            "fastslow_observability_sweep",
+            "fastslow_hetero_sweep",
+            "fastslow_mechanism_sweeps",
+            "smoke",
+            "common",
+            "hard",
+            "highdim",
+            "highdim_theory",
+            "all",
+            "research",
+        ],
+    )
     parser.add_argument("--out_dir", type=str, default="runs/fastslow_validation/fastslow_theory")
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--tasks", nargs="+", default=None)

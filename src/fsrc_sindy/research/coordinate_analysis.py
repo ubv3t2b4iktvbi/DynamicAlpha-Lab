@@ -13,11 +13,13 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import PolynomialFeatures
 from tqdm.auto import tqdm
 
+from ..attractor_prior import WSGAConfig, assign_attractor_labels, build_task_attractor_prior, evaluate_coordinate_attractor_prior
 from ..benchmarks import build_suite
 from ..factors import DynamicsFeatureConfig, DynamicsFeatureEngine
+from ..factors.repository import RG_READOUT_FACTOR_NAMES, SPARSE_RG_GATE_FACTOR_NAMES
 from ..fastslow import CausalFastSlowEncoder, FastSlowConfig
 from ..metrics import r2_score, rmse
-from ..systems import SYSTEMS, BenchmarkTask, rk4_step, simulate_task
+from ..systems import SYSTEMS, BenchmarkTask, rk4_step, simulate_task, task_metadata_columns
 from ..utils import ensure_dir, set_seed
 
 
@@ -83,6 +85,39 @@ def _build_factor_coordinate(y: np.ndarray) -> CoordinateSequence:
     )
 
 
+def _build_rg_coordinate(y: np.ndarray) -> CoordinateSequence:
+    engine = DynamicsFeatureEngine(DynamicsFeatureConfig())
+    ctx = engine.build_base_sequence(y)
+    columns = tuple(RG_READOUT_FACTOR_NAMES)
+    values = np.column_stack([ctx[name] for name in columns])
+    return CoordinateSequence(
+        name="rg",
+        values=np.asarray(values, dtype=float),
+        columns=columns,
+        offset=0,
+        notes="RG-style macro coordinate using order, control, noise, beta-flow, and coarse-grain observables.",
+    )
+
+
+def _build_delay_rg_joint_coordinate(y: np.ndarray, delay_dim: int) -> CoordinateSequence:
+    delay = _build_delay_embedding(y, delay_dim=delay_dim)
+    rg = _build_rg_coordinate(y)
+    sparse_columns = tuple(f"rg_{name}" for name in SPARSE_RG_GATE_FACTOR_NAMES)
+    sparse_idx = [RG_READOUT_FACTOR_NAMES.index(name) for name in SPARSE_RG_GATE_FACTOR_NAMES]
+    rg_values = rg.values[delay.offset:, sparse_idx]
+    values = np.hstack([delay.values, rg_values])
+    return CoordinateSequence(
+        name="delay_rg_joint",
+        values=np.asarray(values, dtype=float),
+        columns=delay.columns + sparse_columns,
+        offset=delay.offset,
+        notes=(
+            "Takens delay embedding augmented with sparse RG macro coordinates. "
+            "This tests whether RG improves closure beyond the delay backbone."
+        ),
+    )
+
+
 def _build_theory_fastslow_coordinate(y: np.ndarray) -> CoordinateSequence:
     engine = DynamicsFeatureEngine(DynamicsFeatureConfig())
     ctx = engine.build_base_sequence(y)
@@ -117,7 +152,9 @@ def build_coordinate_sequences(y: np.ndarray, n_train: int, dt: float, coordinat
             notes="Standardized scalar observation.",
         ),
         "delay": lambda: _build_delay_embedding(y_std, delay_dim=delay_dim),
+        "delay_rg_joint": lambda: _build_delay_rg_joint_coordinate(y_std, delay_dim=delay_dim),
         "fastslow": lambda: _build_fastslow_coordinate(y_std, dt=dt),
+        "rg": lambda: _build_rg_coordinate(y_std),
         "theory_fastslow": lambda: _build_theory_fastslow_coordinate(y_std),
         "factor": lambda: _build_factor_coordinate(y_std),
     }
@@ -410,6 +447,34 @@ def _interpret_coordinate(row: pd.Series) -> str:
         elif offdiag_mi > 0.15:
             notes.append("coordinate components remain strongly entangled")
 
+    epr_score = float(row.get("wsga_epr_score", np.nan))
+    if np.isfinite(epr_score):
+        if epr_score > 0.7:
+            notes.append("the attractor prior and local drift are well aligned under the EPR-style residual")
+        elif epr_score < 0.35:
+            notes.append("the coordinate looks poorly aligned with the attractor prior under the EPR-style residual")
+
+    centroid_corr = float(row.get("wsga_centroid_dist_corr", np.nan))
+    if np.isfinite(centroid_corr):
+        if centroid_corr > 0.7:
+            notes.append("relative attractor spacing is preserved well in this coordinate")
+        elif centroid_corr < 0.3:
+            notes.append("relative attractor spacing is being strongly distorted")
+
+    basin_gap = float(row.get("wsga_basin_sep_gap", np.nan))
+    if np.isfinite(basin_gap):
+        if basin_gap < 0.5:
+            notes.append("basin separation is close to the state-space prior")
+        elif basin_gap > 2.0:
+            notes.append("basin separation differs strongly from the state-space prior")
+
+    entropy_gap = float(row.get("wsga_entropy_gap", np.nan))
+    if np.isfinite(entropy_gap):
+        if entropy_gap < 0.15:
+            notes.append("local basin anisotropy is close to the state-space prior")
+        elif entropy_gap > 0.35:
+            notes.append("local basin anisotropy differs substantially from the state-space prior")
+
     if not notes:
         notes.append("no single mechanism dominates; inspect the raw tables before committing to an interpretation")
     return "; ".join(notes)
@@ -439,6 +504,10 @@ def render_coordinate_report(task: BenchmarkTask, df: pd.DataFrame) -> str:
                 "spectral_radius_rmse",
                 "spectral_radius_corr",
                 "offdiag_mi_mean",
+                "wsga_epr_score",
+                "wsga_basin_separation",
+                "wsga_basin_sep_gap",
+                "wsga_centroid_dist_corr",
             ]
         ].to_markdown(index=False),
         "",
@@ -468,6 +537,12 @@ def render_coordinate_report(task: BenchmarkTask, df: pd.DataFrame) -> str:
         factor_row = ordered[ordered["coordinate"] == "factor"].iloc[0]
         if float(factor_row.get("markov_gain_ratio", np.inf)) < 0.1:
             lines.append("- Factor coordinates are close to Markov on this task; they are good candidates for structured residual or Koopman-style follow-up work.")
+    if "rg" in ordered["coordinate"].tolist():
+        rg_row = ordered[ordered["coordinate"] == "rg"].iloc[0]
+        if float(rg_row.get("koopman_invariance_score", -np.inf)) >= 0.75 and float(rg_row.get("markov_gain_ratio", np.inf)) <= 0.1:
+            lines.append("- RG coordinates are simultaneously close to Markov and Koopman-like; their macro order/control/noise split is aligned with the task dynamics.")
+        elif float(rg_row.get("koopman_invariance_score", np.inf)) < 0.5:
+            lines.append("- RG coordinates are not Koopman-like on this task; the imposed coarse-graining is probably too aggressive or structurally mismatched.")
     if "fastslow" in ordered["coordinate"].tolist():
         fs_row = ordered[ordered["coordinate"] == "fastslow"].iloc[0]
         if float(fs_row.get("offdiag_mi_mean", np.inf)) < 0.1 and float(fs_row.get("spectral_radius_corr", -np.inf)) < 0.2:
@@ -476,6 +551,10 @@ def render_coordinate_report(task: BenchmarkTask, df: pd.DataFrame) -> str:
         theory_row = ordered[ordered["coordinate"] == "theory_fastslow"].iloc[0]
         if float(theory_row.get("koopman_invariance_score", -np.inf)) >= 0.7 and float(theory_row.get("markov_gain_ratio", np.inf)) <= 0.1:
             lines.append("- Theory fast-slow coordinates are simultaneously close to Markov and Koopman-like; use them to guide factor selection and structured residual follow-up.")
+    if "factor" in ordered["coordinate"].tolist():
+        factor_row = ordered[ordered["coordinate"] == "factor"].iloc[0]
+        if float(factor_row.get("wsga_epr_score", -np.inf)) >= 0.7 and float(factor_row.get("wsga_centroid_dist_corr", -np.inf)) >= 0.6:
+            lines.append("- Factor coordinates preserve attractor spacing and fit the EPR-style residual well; treat them as strong quasi-potential candidates.")
     return "\n".join(lines)
 
 
@@ -488,6 +567,7 @@ def run_coordinate_analysis_for_task(
     sample_count: int,
     local_k: int,
     ridge: float,
+    wsga_config: WSGAConfig | None = None,
 ) -> pd.DataFrame:
     sim = simulate_task(task, seed=seed)
     sequences = build_coordinate_sequences(
@@ -503,9 +583,27 @@ def run_coordinate_analysis_for_task(
         "system": task.system,
         "coordinates": {},
     }
+    prior = None
+    prior_labels = None
+    prior_error = None
+    if wsga_config is not None:
+        try:
+            prior = build_task_attractor_prior(task, seed=seed, config=wsga_config, reference_states=sim.states)
+            prior_labels = assign_attractor_labels(sim.states, prior)
+            detail_payload["attractor_prior"] = {
+                "system": prior.system,
+                "noise_strength": prior.noise_strength,
+                "num_attractors": int(len(prior.weights)),
+                "weights": prior.weights.tolist(),
+                "means": prior.means.tolist(),
+            }
+        except ValueError as exc:
+            prior_error = str(exc)
+            detail_payload["attractor_prior_error"] = prior_error
 
     for seq in sequences:
         states_aligned = sim.states[seq.offset : seq.offset + len(seq.values)]
+        labels_aligned = None if prior_labels is None else prior_labels[seq.offset : seq.offset + len(seq.values)]
         z_train, z_val, z_test = _split_aligned(seq.values, task=task, offset=seq.offset)
         val_start = max(task.n_train - seq.offset, 0)
         val_len = len(z_val)
@@ -522,8 +620,18 @@ def run_coordinate_analysis_for_task(
             local_k=local_k,
             ridge=ridge,
         )
+        wsga_metrics = evaluate_coordinate_attractor_prior(
+            seq.values,
+            labels_aligned if labels_aligned is not None else np.zeros(len(seq.values), dtype=int),
+            prior,
+            dt=task.dt,
+            covariance_jitter=1e-6,
+        )
         row = {
             "task": task.name,
+            "system": task.system,
+            "task_family": task.family,
+            "task_regime": task.regime,
             "coordinate": seq.name,
             "coord_dim": int(seq.values.shape[1]),
             "offset": int(seq.offset),
@@ -532,16 +640,21 @@ def run_coordinate_analysis_for_task(
             "test_len": int(len(z_test)),
             "notes": seq.notes,
         }
+        row.update(task_metadata_columns(task))
         row.update(markov)
         row.update(evaluate_koopman_invariance(z_train, z_val))
         row.update(separability)
         row.update(spectral)
+        row.update(wsga_metrics)
+        if prior_error is not None:
+            row["wsga_prior_error"] = prior_error
         rows.append(row)
         detail_payload["coordinates"][seq.name] = {
             "columns": list(seq.columns),
             "offset": seq.offset,
             "notes": seq.notes,
             "spectral_samples": details,
+            "wsga_metrics": wsga_metrics,
         }
 
     df = pd.DataFrame(rows).sort_values("coordinate").reset_index(drop=True)
@@ -563,6 +676,7 @@ def run_coordinate_analysis_suite(
     sample_count: int = 24,
     local_k: int = 64,
     ridge: float = 1e-4,
+    wsga_config: WSGAConfig | None = None,
 ) -> pd.DataFrame:
     set_seed(seed)
     out_path = Path(out_dir)
@@ -590,6 +704,7 @@ def run_coordinate_analysis_suite(
                 sample_count=sample_count,
                 local_k=local_k,
                 ridge=ridge,
+                wsga_config=wsga_config,
             )
         )
     result = pd.concat(all_rows, axis=0, ignore_index=True) if all_rows else pd.DataFrame()
@@ -597,3 +712,124 @@ def run_coordinate_analysis_suite(
         result = result.sort_values(["task", "markov_gain_ratio", "spectral_radius_rmse"], na_position="last").reset_index(drop=True)
     (out_path / "coordinate_analysis_summary.csv").write_text(result.to_csv(index=False), encoding="utf-8")
     return result
+
+
+def _flatten_multiindex_columns(columns: pd.Index) -> list[str]:
+    out: list[str] = []
+    for col in columns:
+        if isinstance(col, tuple):
+            head, tail = col
+            out.append(str(head) if not tail else f"{head}_{tail}")
+        else:
+            out.append(str(col))
+    return out
+
+
+def _render_coordinate_seed_summary(summary_df: pd.DataFrame) -> str:
+    if summary_df.empty:
+        return "# Coordinate Seed Summary\n\nNo rows were produced.\n"
+    preferred = [
+        "task",
+        "coordinate",
+        "seed_count",
+        "markov_gain_ratio_mean",
+        "markov_gain_ratio_std",
+        "koopman_invariance_score_mean",
+        "koopman_invariance_score_std",
+        "spectral_radius_rmse_mean",
+        "spectral_radius_rmse_std",
+        "spectral_radius_corr_mean",
+        "spectral_radius_corr_std",
+    ]
+    cols = [c for c in preferred if c in summary_df.columns]
+    return "\n".join(
+        [
+            "# Coordinate Seed Summary",
+            "",
+            summary_df[cols].sort_values(["task", "coordinate"]).to_markdown(index=False),
+            "",
+        ]
+    )
+
+
+def run_coordinate_analysis_seed_sweep(
+    suite: str,
+    out_dir: str,
+    seeds: Sequence[int],
+    task_names: Sequence[str] | None = None,
+    coordinate_kinds: Sequence[str] = ("raw", "delay", "fastslow", "factor"),
+    task_coordinate_kinds: Mapping[str, Sequence[str]] | None = None,
+    delay_dim: int = 8,
+    sample_count: int = 24,
+    local_k: int = 64,
+    ridge: float = 1e-4,
+    wsga_config: WSGAConfig | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    out_path = Path(out_dir)
+    ensure_dir(out_path)
+    all_runs: list[pd.DataFrame] = []
+    for seed in seeds:
+        seed_dir = out_path / f"seed_{seed}"
+        df_seed = run_coordinate_analysis_suite(
+            suite=suite,
+            out_dir=str(seed_dir),
+            seed=int(seed),
+            task_names=task_names,
+            coordinate_kinds=coordinate_kinds,
+            task_coordinate_kinds=task_coordinate_kinds,
+            delay_dim=delay_dim,
+            sample_count=sample_count,
+            local_k=local_k,
+            ridge=ridge,
+            wsga_config=wsga_config,
+        ).copy()
+        if not df_seed.empty:
+            df_seed["seed"] = int(seed)
+            all_runs.append(df_seed)
+
+    combined = pd.concat(all_runs, axis=0, ignore_index=True) if all_runs else pd.DataFrame()
+    combined_fp = out_path / "coordinate_seed_results.csv"
+    summary_fp = out_path / "coordinate_seed_summary.csv"
+    summary_md_fp = out_path / "coordinate_seed_summary.md"
+    combined.to_csv(combined_fp, index=False)
+
+    if combined.empty:
+        summary = pd.DataFrame()
+    else:
+        group_cols = [
+            c
+            for c in ["task", "system", "task_family", "task_regime", "coordinate", "coord_dim", "notes"]
+            if c in combined.columns
+        ]
+        metric_cols = [
+            c
+            for c in [
+                "markov_rmse",
+                "lagged_rmse",
+                "markov_gain_ratio",
+                "markov_r2",
+                "koopman_linear_r2",
+                "koopman_invariance_score",
+                "spectral_radius_rmse",
+                "spectral_radius_corr",
+                "max_real_eig_rmse",
+                "offdiag_mi_mean",
+            ]
+            if c in combined.columns
+        ]
+        summary = (
+            combined.groupby(group_cols, dropna=False)[metric_cols]
+            .agg(["mean", "std", "min", "max"])
+            .reset_index()
+        )
+        summary.columns = _flatten_multiindex_columns(summary.columns)
+        seed_counts = (
+            combined.groupby(group_cols, dropna=False)["seed"]
+            .nunique()
+            .reset_index(name="seed_count")
+        )
+        summary = seed_counts.merge(summary, on=group_cols, how="left")
+        summary = summary.sort_values(["task", "coordinate"]).reset_index(drop=True)
+    summary.to_csv(summary_fp, index=False)
+    summary_md_fp.write_text(_render_coordinate_seed_summary(summary), encoding="utf-8")
+    return combined, summary

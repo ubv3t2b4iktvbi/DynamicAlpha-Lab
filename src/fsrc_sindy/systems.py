@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional
 
@@ -50,14 +51,29 @@ def vanderpol_rhs(x: np.ndarray, t: float, p: dict) -> np.ndarray:
     return np.array([dx, dv], dtype=float)
 
 
+def bistable_rhs(x: np.ndarray, t: float, p: dict) -> np.ndarray:
+    a = p.get("a", 1.0)
+    k = p.get("k", 1.0)
+    S = p.get("S", 0.5)
+    n = int(p.get("n", 4))
+    state = np.asarray(x, dtype=float)
+    state_n = np.power(state, n)
+    s_n = S**n
+    activate = a * state_n / (s_n + state_n)
+    restrict = a * s_n / (s_n + state_n)
+    return -k * state + activate + restrict[::-1]
+
+
 def fitzhugh_nagumo_rhs(x: np.ndarray, t: float, p: dict) -> np.ndarray:
     a = p.get("a", 0.7)
     b = p.get("b", 0.8)
     eps = p.get("eps", 0.08)
     I = p.get("I", 0.5)
+    slow_to_fast_h = p.get("slow_to_fast_h", 1.0)
+    fast_to_slow_h = p.get("fast_to_slow_h", 1.0)
     v, w = x
-    dv = v - v ** 3 / 3.0 - w + I
-    dw = eps * (v + a - b * w)
+    dv = v - v ** 3 / 3.0 - slow_to_fast_h * w + I
+    dw = eps * (fast_to_slow_h * v + a - b * w)
     return np.array([dv, dw], dtype=float)
 
 
@@ -70,10 +86,12 @@ def hindmarsh_rose_rhs(x: np.ndarray, t: float, p: dict) -> np.ndarray:
     s = p.get("s", 4.0)
     x_r = p.get("x_r", -1.6)
     I = p.get("I", 3.25)
+    slow_to_fast_h = p.get("slow_to_fast_h", 1.0)
+    fast_to_slow_h = p.get("fast_to_slow_h", 1.0)
     v, y, z = x
-    dv = y - a * v**3 + b * v**2 - z + I
+    dv = y - a * v**3 + b * v**2 - slow_to_fast_h * z + I
     dy = c - d * v**2 - y
-    dz = r * (s * (v - x_r) - z)
+    dz = r * (fast_to_slow_h * s * (v - x_r) - z)
     return np.array([dv, dy, dz], dtype=float)
 
 
@@ -91,6 +109,8 @@ def lorenz96_twoscale_rhs(x: np.ndarray, t: float, p: dict) -> np.ndarray:
     J = p.get("J", 4)
     F = p.get("F", 10.0)
     h = p.get("h", 1.0)
+    fast_to_slow_h = p.get("fast_to_slow_h", h)
+    slow_to_fast_h = p.get("slow_to_fast_h", h)
     c = p.get("c", 10.0)
     b = p.get("b", 10.0)
     X = x[:K]
@@ -98,14 +118,14 @@ def lorenz96_twoscale_rhs(x: np.ndarray, t: float, p: dict) -> np.ndarray:
     dX = np.zeros_like(X)
     dY = np.zeros_like(Y)
     for k in range(K):
-        coupling = (h * c / b) * np.sum(Y[k])
+        coupling = (fast_to_slow_h * c / b) * np.sum(Y[k])
         dX[k] = -X[k - 1] * (X[k - 2] - X[(k + 1) % K]) - X[k] + F - coupling
     for k in range(K):
         for j in range(J):
             jp1 = (j + 1) % J
             jp2 = (j + 2) % J
             jm1 = (j - 1) % J
-            dY[k, j] = -c * b * Y[k, jp1] * (Y[k, jp2] - Y[k, jm1]) - c * Y[k, j] + (h * c / b) * X[k]
+            dY[k, j] = -c * b * Y[k, jp1] * (Y[k, jp2] - Y[k, jm1]) - c * Y[k, j] + (slow_to_fast_h * c / b) * X[k]
     return np.concatenate([dX, dY.reshape(-1)])
 
 
@@ -127,6 +147,7 @@ SYSTEMS: Dict[str, Dict[str, object]] = {
     "rossler": {"rhs": rossler_rhs, "default_x0": np.array([1.0, 0.0, 0.0], dtype=float)},
     "duffing": {"rhs": duffing_rhs, "default_x0": np.array([0.1, 0.0], dtype=float)},
     "vanderpol": {"rhs": vanderpol_rhs, "default_x0": np.array([2.0, 0.0], dtype=float)},
+    "bistable": {"rhs": bistable_rhs, "default_x0": np.array([0.25, 1.25], dtype=float), "bounds": (0.0, 3.0)},
     "fitzhugh_nagumo": {"rhs": fitzhugh_nagumo_rhs, "default_x0": np.array([-1.0, 1.0], dtype=float)},
     "hindmarsh_rose": {"rhs": hindmarsh_rose_rhs, "default_x0": np.array([0.0, 0.0, 0.0], dtype=float)},
     "lorenz96": {"rhs": lorenz96_rhs, "default_x0": lorenz96_default_x0},
@@ -151,6 +172,11 @@ class BenchmarkTask:
     burn_in: int = 500
     process_noise_std: float = 0.0
     obs_noise_std: float = 0.0
+    process_noise_volatility: float = 0.0
+    obs_noise_volatility: float = 0.0
+    noise_ema_span: float = 32.0
+    noise_volatility_clip: float = 4.0
+    match_obs_noise_energy: bool = False
     params: dict = field(default_factory=dict)
     x0: Optional[np.ndarray] = None
     obs_mode: str = "x0"
@@ -161,6 +187,7 @@ class BenchmarkTask:
     family: str = ""
     regime: str = ""
     tags: tuple[str, ...] = ()
+    metadata: dict = field(default_factory=dict)
 
     @property
     def total_steps(self) -> int:
@@ -193,6 +220,54 @@ def observe(states: np.ndarray, system: str, obs_mode: str, params: Optional[dic
     raise ValueError(f"Unsupported obs_mode={obs_mode} for system={system}")
 
 
+def _metadata_value(value: object) -> object:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def task_metadata_columns(task: BenchmarkTask) -> dict[str, object]:
+    payload = dict(task.metadata or {})
+    row = {"task_metadata": json.dumps(payload, ensure_ascii=False, sort_keys=True)}
+    for key, value in payload.items():
+        key_str = str(key).strip()
+        if not key_str:
+            continue
+        row[key_str] = _metadata_value(value)
+    return row
+
+
+def _update_noise_scale(
+    *,
+    activity: float,
+    ema: float | None,
+    baseline: float | None,
+    noise_alpha: float,
+    baseline_alpha: float,
+    volatility: float,
+    clip: float,
+) -> tuple[float, float, float]:
+    activity = float(abs(activity))
+    if ema is None or baseline is None:
+        return 1.0, activity, max(activity, 1e-12)
+    ema = (1.0 - noise_alpha) * ema + noise_alpha * activity
+    baseline = (1.0 - baseline_alpha) * baseline + baseline_alpha * activity
+    activity_ratio = ema / (baseline + 1e-12)
+    scale = 1.0 + float(volatility) * min(max(activity_ratio - 1.0, 0.0), float(clip))
+    return scale, ema, baseline
+
+
+def _match_noise_rms(noise: np.ndarray, target_std: float) -> np.ndarray:
+    target_std = float(target_std)
+    if target_std <= 0.0:
+        return np.asarray(noise, dtype=float)
+    noise = np.asarray(noise, dtype=float)
+    rms = float(np.sqrt(np.mean(np.square(noise))) + 1e-12)
+    return noise * (target_std / rms)
+
+
 def simulate_task(task: BenchmarkTask, seed: int) -> SimulationResult:
     rng = np.random.default_rng(seed)
     meta = SYSTEMS[task.system]
@@ -208,16 +283,49 @@ def simulate_task(task: BenchmarkTask, seed: int) -> SimulationResult:
     states = np.zeros((total_steps, len(x0)), dtype=float)
     x = x0.copy()
     t = 0.0
+    noise_alpha = 2.0 / (max(float(task.noise_ema_span), 1.0) + 1.0)
+    baseline_alpha = max(0.05 * noise_alpha, min(0.2 * noise_alpha, 0.05))
+    process_ema = None
+    process_baseline = None
     for i in range(total_steps):
-        x = rk4_step(rhs, x, t, task.dt, task.params)
+        x_next = rk4_step(rhs, x, t, task.dt, task.params)
         if task.process_noise_std > 0.0:
-            x = x + np.sqrt(task.dt) * task.process_noise_std * rng.normal(size=x.shape)
-        states[i] = x
+            activity = float(np.linalg.norm(x_next - x) / np.sqrt(max(len(x), 1)))
+            process_scale, process_ema, process_baseline = _update_noise_scale(
+                activity=activity,
+                ema=process_ema,
+                baseline=process_baseline,
+                noise_alpha=noise_alpha,
+                baseline_alpha=baseline_alpha,
+                volatility=task.process_noise_volatility,
+                clip=task.noise_volatility_clip,
+            )
+            x_next = x_next + np.sqrt(task.dt) * task.process_noise_std * process_scale * rng.normal(size=x.shape)
+        x = x_next
+        states[i] = x_next
         t += task.dt
     states = states[task.burn_in:]
-    obs = observe(states, task.system, task.obs_mode, params=task.params, obs_params=task.obs_params).astype(float)
+    obs_clean = observe(states, task.system, task.obs_mode, params=task.params, obs_params=task.obs_params).astype(float)
+    obs = obs_clean.copy()
     if task.obs_noise_std > 0.0:
-        obs = obs + task.obs_noise_std * rng.normal(size=obs.shape)
+        obs_ema = None
+        obs_baseline = None
+        noise = np.zeros_like(obs)
+        for i in range(len(obs)):
+            activity = 0.0 if i == 0 else float(abs(obs_clean[i] - obs_clean[i - 1]))
+            obs_scale, obs_ema, obs_baseline = _update_noise_scale(
+                activity=activity,
+                ema=obs_ema,
+                baseline=obs_baseline,
+                noise_alpha=noise_alpha,
+                baseline_alpha=baseline_alpha,
+                volatility=task.obs_noise_volatility,
+                clip=task.noise_volatility_clip,
+            )
+            noise[i] = task.obs_noise_std * obs_scale * rng.normal()
+        if task.match_obs_noise_energy:
+            noise = _match_noise_rms(noise, target_std=task.obs_noise_std)
+        obs = obs + noise
     return SimulationResult(states=states, obs=obs)
 
 

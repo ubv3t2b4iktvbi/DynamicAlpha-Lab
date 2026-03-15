@@ -26,7 +26,13 @@ def manual_review_markdown(
         f"- baseline rmse@50: {selected_library.baseline_rmse50:.6g}",
         f"- final validation rmse@10: {selected_library.final_rmse10:.6g}",
         f"- final validation rmse@50: {selected_library.final_rmse50:.6g}",
-        f"- validation score: {selected_library.validation_score:.6g}",
+        f"- rollout validation score: {selected_library.rollout_validation_score:.6g}",
+        f"- combined validation score: {selected_library.validation_score:.6g}",
+        f"- baseline wsga epr score: {selected_library.baseline_wsga_epr_score:.6g}",
+        f"- final wsga epr score: {selected_library.final_wsga_epr_score:.6g}",
+        f"- library layers: {', '.join(f'{name}={len(items)}' for name, items in selected_library.library_layers.items())}",
+        f"- future factor queue: {', '.join(selected_library.future_factor_queue) if selected_library.future_factor_queue else 'none'}",
+        f"- curation notes: {selected_library.curation_notes}",
         f"- notes: {selected_library.notes}",
         "",
         "## 2. Factors requiring human review",
@@ -45,9 +51,18 @@ def manual_review_markdown(
                     "selected": row.selected,
                     "factor": row.factor_name,
                     "family": row.family,
+                    "role": row.manifold_role,
                     "rmse": row.one_step_rmse,
                     "gain_vs_baseline": row.gain_vs_baseline,
                     "koopman_score": row.koopman_score,
+                    "wsga_epr_score": row.wsga_epr_score,
+                    "target_corr": row.target_corr,
+                    "target_mi": row.target_mutual_info,
+                    "redundancy_corr": row.max_redundancy_corr,
+                    "redundancy_mi": row.max_redundancy_mutual_info,
+                    "effectiveness": row.effectiveness_score,
+                    "curation_score": row.curation_score,
+                    "tier": row.curation_tier,
                     "formula": row.formula,
                     "finance_origin": row.finance_origin,
                     "dynamics_meaning": row.dynamics_meaning,
@@ -62,6 +77,7 @@ def manual_review_markdown(
     lines.append("## 3. Property-guided context")
     lines.append("")
     lines.append(f"- property summary: {selected_library.notes}")
+    lines.append(f"- layering summary: {selected_library.curation_notes}")
     lines.append("")
     lines.append("## 4. Review checklist")
     lines.append("")

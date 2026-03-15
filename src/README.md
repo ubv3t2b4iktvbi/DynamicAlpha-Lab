@@ -36,3 +36,9 @@
 
 - `src/fsrc_sindy/research/demo.py` provides notebook-facing helpers that reuse validation runs, build dashboard tables, and summarize theory evidence conservatively.
 - The current slow-fast review notebook is `notebooks/sf/classic_sparse_sf_demo.ipynb`, which can reuse `fastslow_theory` and `fastslow_sparse_theory` artifacts when they already exist.
+
+## Attractor-Prior Update
+
+- `src/fsrc_sindy/attractor_prior.py` adds a pure-numpy WSGA implementation plus attractor-aware EPR-style diagnostics.
+- The implementation is reusable across research and factor-mining paths, instead of being tied to a separate neural landscape trainer.
+- The new `gaepr_smoke` suite is intended as a low-friction entry point for these attractor-prior experiments.

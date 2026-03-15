@@ -23,6 +23,7 @@ class ProgressTracker:
         df.to_csv(self.results_fp, index=False)
         summary_cols = [c for c in [
             'task', 'system', 'task_family', 'task_regime', 'state_dim', 'variant', 'base_model_name', 'model_family',
+            'sweep_group', 'sweep_axis', 'sweep_value', 'sweep_label', 'observability_profile', 'noise_profile',
             'readout_identifier_kind', 'readout_factor_count', 'readout_factor_names',
             'train_time_sec', 'rollout_eval_time_sec',
             'speed_us_per_step', 'effective_dim', 'trained_params', 'total_params',

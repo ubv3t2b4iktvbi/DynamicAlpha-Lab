@@ -16,7 +16,7 @@ from fsrc_sindy.pipeline import run_factor_mining_suite
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run RC-based automatic dynamical factor mining.")
-    parser.add_argument("--suite", type=str, default="smoke", choices=["smoke", "common", "hard", "fastslow_smoke", "fastslow_theory", "fastslow_sparse_theory", "highdim", "highdim_theory", "all", "research"])
+    parser.add_argument("--suite", type=str, default="smoke", choices=["smoke", "common", "hard", "fastslow_smoke", "fastslow_theory", "fastslow_sparse_theory", "fastslow_finance_theory", "highdim", "highdim_theory", "gaepr_smoke", "all", "research"])
     parser.add_argument("--out_dir", type=str, default="runs/factor_mining/smoke")
     parser.add_argument("--seed", type=int, default=None, help="Optional seed override. Defaults to factor_mining.random_seed from config, else 123.")
     parser.add_argument("--mode", type=str, default=None, choices=["accumulate", "identify"], help="Optional mining mode override.")
@@ -24,6 +24,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tasks", nargs="+", default=None)
     parser.add_argument("--identifier_kinds", nargs="+", default=None)
     parser.add_argument("--config", type=str, default=None, help="Optional YAML config for RC / factor mining / feature settings.")
+    parser.add_argument("--wsga_prior", action="store_true", help="Use WSGA attractor prior as an optional EPR-style screening signal.")
+    parser.add_argument("--wsga_noise_strength", type=float, default=0.01)
+    parser.add_argument("--wsga_steps", type=int, default=2000)
+    parser.add_argument("--wsga_rand_num", type=int, default=128)
+    parser.add_argument("--epr_weight_strength", type=float, default=None)
     return parser.parse_args()
 
 
@@ -56,6 +61,13 @@ def main() -> None:
         mining_kwargs["mode"] = args.mode
     if args.full_library_search:
         mining_kwargs["full_library_search"] = True
+    if args.wsga_prior:
+        mining_kwargs["use_wsga_prior"] = True
+        mining_kwargs["wsga_noise_strength"] = args.wsga_noise_strength
+        mining_kwargs["wsga_steps"] = args.wsga_steps
+        mining_kwargs["wsga_rand_num"] = args.wsga_rand_num
+    if args.epr_weight_strength is not None:
+        mining_kwargs["epr_weight_strength"] = args.epr_weight_strength
     seed = args.seed if args.seed is not None else int(mining_kwargs.get("random_seed", 123))
     mining_cfg = FactorMiningConfig(**mining_kwargs)
     rc_cfg = RCConfig(**rc_kwargs)
@@ -70,7 +82,7 @@ def main() -> None:
         rc_cfg=rc_cfg,
         feature_cfg=feature_cfg,
     )
-    cols = [c for c in ["task", "identifier_kind", "mode", "num_selected", "final_rmse10", "final_rmse50", "test_rmse50", "selected_factors"] if c in df.columns]
+    cols = [c for c in ["task", "identifier_kind", "mode", "num_selected", "validation_score", "rollout_validation_score", "final_rmse10", "final_rmse50", "test_rmse50", "selected_factors", "selected_wsga_epr_score"] if c in df.columns]
     print("\n=== factor mining finished ===")
     if not df.empty:
         print(df[cols].to_string(index=False))

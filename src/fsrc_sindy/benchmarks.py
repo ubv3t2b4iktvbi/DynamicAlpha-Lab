@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import numpy as np
+
 from .systems import BenchmarkTask
 
 
@@ -14,6 +16,42 @@ def twoscale_local_mix(K: int, J: int, slow_terms: list[tuple[int, float]], fast
     indices.extend(range(fast_offset, fast_offset + J))
     weights.extend([fast_weight / J] * J)
     return linear_proj(indices, weights)
+
+
+def twoscale_sparse_slow_proj(K: int, weights: list[float] | None = None) -> dict:
+    anchor_indices = sorted({0, max(1, K // 3), max(2, (2 * K) // 3)})
+    base_weights = weights or [1.0, 0.75, -0.5]
+    return linear_proj(anchor_indices, base_weights[: len(anchor_indices)])
+
+
+def sweep_metadata(
+    *,
+    sweep_suite: str,
+    sweep_group: str,
+    sweep_axis: str,
+    sweep_value: float,
+    sweep_label: str,
+    observability_profile: str,
+    noise_profile: str,
+    slow_to_fast_coupling: float,
+    fast_to_slow_coupling: float,
+    matched_noise_energy: bool = False,
+    **extra: object,
+) -> dict:
+    payload = {
+        "sweep_suite": sweep_suite,
+        "sweep_group": sweep_group,
+        "sweep_axis": sweep_axis,
+        "sweep_value": float(sweep_value),
+        "sweep_label": sweep_label,
+        "observability_profile": observability_profile,
+        "noise_profile": noise_profile,
+        "slow_to_fast_coupling": float(slow_to_fast_coupling),
+        "fast_to_slow_coupling": float(fast_to_slow_coupling),
+        "matched_noise_energy": bool(matched_noise_energy),
+    }
+    payload.update(extra)
+    return payload
 
 
 def task(name: str, system: str, *, family: str = "", regime: str = "", tags: tuple[str, ...] = (), **kwargs) -> BenchmarkTask:
@@ -57,6 +95,46 @@ def build_smoke_suite() -> list[BenchmarkTask]:
             family="lowdim_multiscale",
             regime="clean_partial",
             tags=("smoke", "lowdim", "multiscale", "partial_obs"),
+        ),
+    ]
+
+
+def build_gaepr_smoke_suite() -> list[BenchmarkTask]:
+    return [
+        task(
+            name="bistable_wsga_smoke",
+            system="bistable",
+            dt=0.01,
+            n_train=2000,
+            n_val=800,
+            n_test=800,
+            burn_in=400,
+            process_noise_std=0.1,
+            params={"a": 0.8},
+            x0=np.array([0.95, 0.95], dtype=float),
+            obs_mode="x0",
+            stat_horizon=128,
+            family="lowdim_multistable",
+            regime="steady_state_partial",
+            tags=("gaepr", "smoke", "lowdim", "multistable", "partial_obs"),
+        ),
+        task(
+            name="bistable_wsga_noisy",
+            system="bistable",
+            dt=0.01,
+            n_train=2500,
+            n_val=1000,
+            n_test=1000,
+            burn_in=500,
+            process_noise_std=0.15,
+            obs_noise_std=0.01,
+            params={"a": 0.8},
+            x0=np.array([0.95, 0.95], dtype=float),
+            obs_mode="x0",
+            stat_horizon=160,
+            family="lowdim_multistable",
+            regime="steady_state_noisy_partial",
+            tags=("gaepr", "smoke", "lowdim", "multistable", "noisy", "partial_obs"),
         ),
     ]
 
@@ -607,13 +685,370 @@ def build_fastslow_sparse_theory_suite() -> list[BenchmarkTask]:
     ]
 
 
+def build_fastslow_finance_theory_suite() -> list[BenchmarkTask]:
+    return [
+        task(
+            name="vanderpol_relaxation_volclustered",
+            system="vanderpol",
+            dt=0.01,
+            n_train=4000,
+            n_val=1500,
+            n_test=1500,
+            burn_in=900,
+            params={"mu": 12.0},
+            process_noise_std=0.02,
+            obs_noise_std=0.03,
+            process_noise_volatility=1.25,
+            obs_noise_volatility=1.75,
+            noise_ema_span=48.0,
+            obs_mode="x0",
+            stat_horizon=256,
+            family="classic_fastslow_finance",
+            regime="relaxation_volclustered_partial",
+            tags=("fastslow", "classic", "finance_style", "relaxation", "vol_clustered", "partial_obs"),
+        ),
+        task(
+            name="fitzhugh_nagumo_classic_volclustered",
+            system="fitzhugh_nagumo",
+            dt=0.05,
+            n_train=4200,
+            n_val=1600,
+            n_test=1600,
+            burn_in=900,
+            params={"a": 0.7, "b": 0.8, "eps": 0.08, "I": 0.5},
+            process_noise_std=0.025,
+            obs_noise_std=0.025,
+            process_noise_volatility=1.5,
+            obs_noise_volatility=1.5,
+            noise_ema_span=40.0,
+            obs_mode="x0",
+            stat_horizon=256,
+            family="classic_fastslow_finance",
+            regime="excitable_volclustered_partial",
+            tags=("fastslow", "classic", "finance_style", "excitable", "vol_clustered", "partial_obs"),
+        ),
+        task(
+            name="hindmarsh_rose_bursting_volclustered",
+            system="hindmarsh_rose",
+            dt=0.02,
+            n_train=4500,
+            n_val=1800,
+            n_test=1800,
+            burn_in=1200,
+            params={"I": 3.25, "r": 0.006},
+            process_noise_std=0.015,
+            obs_noise_std=0.03,
+            process_noise_volatility=1.75,
+            obs_noise_volatility=2.0,
+            noise_ema_span=48.0,
+            obs_mode="x0",
+            stat_horizon=320,
+            family="classic_fastslow_finance",
+            regime="bursting_volclustered_partial",
+            tags=("fastslow", "classic", "finance_style", "bursting", "vol_clustered", "partial_obs"),
+        ),
+        task(
+            name="lorenz96_twoscale_sparse_triplet_volclustered",
+            system="lorenz96_twoscale",
+            dt=0.005,
+            n_train=5500,
+            n_val=2200,
+            n_test=2200,
+            burn_in=1800,
+            params={"K": 24, "J": 8, "F": 10.0, "h": 1.0, "c": 12.0, "b": 10.0},
+            process_noise_std=0.03,
+            obs_noise_std=0.03,
+            process_noise_volatility=1.5,
+            obs_noise_volatility=2.25,
+            noise_ema_span=64.0,
+            stat_horizon=512,
+            family="highdim_multiscale_finance",
+            regime="sparse_triplet_volclustered",
+            tags=("fastslow", "highdim", "multiscale", "finance_style", "vol_clustered", "sparse_obs", "theory_driven"),
+            **linear_proj([0, 8, 16], [1.0, 0.75, -0.5]),
+        ),
+    ]
+
+
+def build_fastslow_gating_sweep_suite() -> list[BenchmarkTask]:
+    base_params = {"K": 8, "J": 4, "F": 10.0, "c": 10.0, "b": 10.0, "fast_to_slow_h": 1.0}
+    levels = [0.0, 0.4, 0.8, 1.2, 1.6]
+    tasks: list[BenchmarkTask] = []
+    for level in levels:
+        level_slug = str(level).replace(".", "p")
+        params = dict(base_params, slow_to_fast_h=level)
+        tasks.append(
+            task(
+                name=f"lorenz96_twoscale_gate_s2f_{level_slug}",
+                system="lorenz96_twoscale",
+                dt=0.005,
+                n_train=2800,
+                n_val=900,
+                n_test=900,
+                burn_in=1200,
+                params=params,
+                obs_mode="slow0",
+                stat_horizon=320,
+                family="highdim_multiscale_mechanism",
+                regime=f"slow_gate_sweep_{level_slug}",
+                tags=("fastslow", "highdim", "multiscale", "mechanism_sweep", "gating_sweep", "partial_obs"),
+                metadata=sweep_metadata(
+                    sweep_suite="fastslow_mechanism_sweeps",
+                    sweep_group="slow_gating_strength",
+                    sweep_axis="slow_to_fast_coupling",
+                    sweep_value=level,
+                    sweep_label=f"slow_to_fast={level:.2f}",
+                    observability_profile="slow0",
+                    noise_profile="clean",
+                    slow_to_fast_coupling=level,
+                    fast_to_slow_coupling=1.0,
+                ),
+            )
+        )
+    return tasks
+
+
+def build_fastslow_observability_sweep_suite() -> list[BenchmarkTask]:
+    params = {"K": 8, "J": 4, "F": 10.0, "c": 10.0, "b": 10.0, "fast_to_slow_h": 1.0, "slow_to_fast_h": 1.2}
+    common = dict(
+        system="lorenz96_twoscale",
+        dt=0.005,
+        n_train=2800,
+        n_val=900,
+        n_test=900,
+        burn_in=1200,
+        params=params,
+        stat_horizon=320,
+        family="highdim_multiscale_mechanism",
+    )
+    return [
+        task(
+            name="lorenz96_twoscale_obs_slow0",
+            regime="observability_slow0",
+            obs_mode="slow0",
+            tags=("fastslow", "highdim", "multiscale", "mechanism_sweep", "observability_sweep", "partial_obs"),
+            metadata=sweep_metadata(
+                sweep_suite="fastslow_mechanism_sweeps",
+                sweep_group="observability",
+                sweep_axis="observability_profile",
+                sweep_value=0.0,
+                sweep_label="slow0",
+                observability_profile="slow0",
+                noise_profile="clean",
+                slow_to_fast_coupling=1.2,
+                fast_to_slow_coupling=1.0,
+            ),
+            **common,
+        ),
+        task(
+            name="lorenz96_twoscale_obs_sparse_slowproj",
+            regime="observability_sparse_slow_projection",
+            tags=("fastslow", "highdim", "multiscale", "mechanism_sweep", "observability_sweep", "sparse_obs"),
+            metadata=sweep_metadata(
+                sweep_suite="fastslow_mechanism_sweeps",
+                sweep_group="observability",
+                sweep_axis="observability_profile",
+                sweep_value=1.0,
+                sweep_label="sparse_slow_projection",
+                observability_profile="sparse_slow_projection",
+                noise_profile="clean",
+                slow_to_fast_coupling=1.2,
+                fast_to_slow_coupling=1.0,
+            ),
+            **twoscale_sparse_slow_proj(K=8),
+            **common,
+        ),
+        task(
+            name="lorenz96_twoscale_obs_mixed_projection",
+            regime="observability_slow_fast_mixed_projection",
+            tags=("fastslow", "highdim", "multiscale", "mechanism_sweep", "observability_sweep", "mixed_obs"),
+            metadata=sweep_metadata(
+                sweep_suite="fastslow_mechanism_sweeps",
+                sweep_group="observability",
+                sweep_axis="observability_profile",
+                sweep_value=2.0,
+                sweep_label="slow_fast_mixed_projection",
+                observability_profile="slow_fast_mixed_projection",
+                noise_profile="clean",
+                slow_to_fast_coupling=1.2,
+                fast_to_slow_coupling=1.0,
+            ),
+            **twoscale_local_mix(K=8, J=4, slow_terms=[(0, 1.0), (4, 0.55)], fast_group=0, fast_weight=0.35),
+            **common,
+        ),
+    ]
+
+
+def build_fastslow_hetero_sweep_suite() -> list[BenchmarkTask]:
+    common = dict(
+        system="lorenz96_twoscale",
+        dt=0.005,
+        n_train=2800,
+        n_val=900,
+        n_test=900,
+        burn_in=1200,
+        params={"K": 8, "J": 4, "F": 10.0, "c": 10.0, "b": 10.0, "fast_to_slow_h": 1.0, "slow_to_fast_h": 1.2},
+        obs_noise_std=0.035,
+        stat_horizon=320,
+        family="highdim_multiscale_mechanism",
+        **twoscale_sparse_slow_proj(K=8),
+    )
+    return [
+        task(
+            name="lorenz96_twoscale_noise_homoskedastic",
+            regime="hetero_control_homoskedastic",
+            tags=("fastslow", "highdim", "multiscale", "mechanism_sweep", "hetero_sweep", "sparse_obs", "noisy"),
+            metadata=sweep_metadata(
+                sweep_suite="fastslow_mechanism_sweeps",
+                sweep_group="heteroscedasticity",
+                sweep_axis="noise_profile",
+                sweep_value=0.0,
+                sweep_label="homoskedastic",
+                observability_profile="sparse_slow_projection",
+                noise_profile="homoskedastic",
+                slow_to_fast_coupling=1.2,
+                fast_to_slow_coupling=1.0,
+                matched_noise_energy=False,
+            ),
+            **common,
+        ),
+        task(
+            name="lorenz96_twoscale_noise_matched_clustered",
+            regime="hetero_control_matched_clustered",
+            obs_noise_volatility=1.75,
+            noise_ema_span=48.0,
+            match_obs_noise_energy=True,
+            tags=("fastslow", "highdim", "multiscale", "mechanism_sweep", "hetero_sweep", "sparse_obs", "noisy", "vol_clustered"),
+            metadata=sweep_metadata(
+                sweep_suite="fastslow_mechanism_sweeps",
+                sweep_group="heteroscedasticity",
+                sweep_axis="noise_profile",
+                sweep_value=1.0,
+                sweep_label="matched_clustered",
+                observability_profile="sparse_slow_projection",
+                noise_profile="matched_clustered",
+                slow_to_fast_coupling=1.2,
+                fast_to_slow_coupling=1.0,
+                matched_noise_energy=True,
+            ),
+            **common,
+        ),
+    ]
+
+
+def build_fastslow_mechanism_sweeps_suite() -> list[BenchmarkTask]:
+    return (
+        build_fastslow_gating_sweep_suite()
+        + build_fastslow_observability_sweep_suite()
+        + build_fastslow_hetero_sweep_suite()
+    )
+
+
+def build_fastslow_crosssystem_gating_smoke_suite() -> list[BenchmarkTask]:
+    levels = [0.4, 0.8, 1.2, 1.6]
+    system_specs = [
+        {
+            "name": "lorenz96_twoscale",
+            "system": "lorenz96_twoscale",
+            "dt": 0.005,
+            "n_train": 2200,
+            "n_val": 800,
+            "n_test": 800,
+            "burn_in": 1000,
+            "params": {"K": 8, "J": 4, "F": 10.0, "c": 10.0, "b": 10.0, "fast_to_slow_h": 1.0},
+            "obs_mode": "slow0",
+            "stat_horizon": 320,
+            "family": "crosssystem_fastslow_gating",
+            "regime_prefix": "lorenz96_twoscale_crosssystem_gate",
+            "tags": ("fastslow", "crosssystem", "highdim", "multiscale", "gating_sweep", "partial_obs"),
+            "base_metadata": {"mechanism_system": "lorenz96_twoscale", "observation_family": "slow0"},
+        },
+        {
+            "name": "fitzhugh_nagumo",
+            "system": "fitzhugh_nagumo",
+            "dt": 0.05,
+            "n_train": 1800,
+            "n_val": 700,
+            "n_test": 700,
+            "burn_in": 500,
+            "params": {"a": 0.7, "b": 0.8, "eps": 0.08, "I": 0.5, "fast_to_slow_h": 1.0},
+            "obs_mode": "x0",
+            "stat_horizon": 256,
+            "family": "crosssystem_fastslow_gating",
+            "regime_prefix": "fitzhugh_nagumo_crosssystem_gate",
+            "tags": ("fastslow", "crosssystem", "classic", "multiscale", "gating_sweep", "partial_obs"),
+            "base_metadata": {"mechanism_system": "fitzhugh_nagumo", "observation_family": "x0"},
+        },
+        {
+            "name": "hindmarsh_rose",
+            "system": "hindmarsh_rose",
+            "dt": 0.02,
+            "n_train": 2200,
+            "n_val": 700,
+            "n_test": 700,
+            "burn_in": 700,
+            "params": {"I": 3.25, "r": 0.006, "fast_to_slow_h": 1.0},
+            "obs_mode": "x0",
+            "stat_horizon": 256,
+            "family": "crosssystem_fastslow_gating",
+            "regime_prefix": "hindmarsh_rose_crosssystem_gate",
+            "tags": ("fastslow", "crosssystem", "classic", "bursting", "gating_sweep", "partial_obs"),
+            "base_metadata": {"mechanism_system": "hindmarsh_rose", "observation_family": "x0"},
+        },
+    ]
+    tasks: list[BenchmarkTask] = []
+    for spec in system_specs:
+        for level in levels:
+            level_slug = str(level).replace(".", "p")
+            params = dict(spec["params"], slow_to_fast_h=level)
+            metadata = sweep_metadata(
+                sweep_suite="fastslow_crosssystem_gating_smoke",
+                sweep_group="slow_gating_strength",
+                sweep_axis="slow_to_fast_coupling",
+                sweep_value=level,
+                sweep_label=f"slow_to_fast={level:.2f}",
+                observability_profile=str(spec["base_metadata"]["observation_family"]),
+                noise_profile="clean",
+                slow_to_fast_coupling=level,
+                fast_to_slow_coupling=1.0,
+                normalized_slow_to_fast_coupling=float(level),
+                **spec["base_metadata"],
+            )
+            tasks.append(
+                task(
+                    name=f"{spec['name']}_cross_gate_s2f_{level_slug}",
+                    system=str(spec["system"]),
+                    dt=float(spec["dt"]),
+                    n_train=int(spec["n_train"]),
+                    n_val=int(spec["n_val"]),
+                    n_test=int(spec["n_test"]),
+                    burn_in=int(spec["burn_in"]),
+                    params=params,
+                    obs_mode=str(spec["obs_mode"]),
+                    stat_horizon=int(spec["stat_horizon"]),
+                    family=str(spec["family"]),
+                    regime=f"{spec['regime_prefix']}_{level_slug}",
+                    tags=tuple(spec["tags"]),
+                    metadata=metadata,
+                )
+            )
+    return tasks
+
+
 SUITE_BUILDERS = {
     "smoke": build_smoke_suite,
+    "gaepr_smoke": build_gaepr_smoke_suite,
     "common": build_common_suite,
     "hard": build_hard_suite,
     "fastslow_smoke": build_fastslow_smoke_suite,
     "fastslow_theory": build_fastslow_theory_suite,
     "fastslow_sparse_theory": build_fastslow_sparse_theory_suite,
+    "fastslow_finance_theory": build_fastslow_finance_theory_suite,
+    "fastslow_gating_sweep": build_fastslow_gating_sweep_suite,
+    "fastslow_observability_sweep": build_fastslow_observability_sweep_suite,
+    "fastslow_hetero_sweep": build_fastslow_hetero_sweep_suite,
+    "fastslow_mechanism_sweeps": build_fastslow_mechanism_sweeps_suite,
+    "fastslow_crosssystem_gating_smoke": build_fastslow_crosssystem_gating_smoke_suite,
     "highdim": build_highdim_suite,
     "highdim_theory": build_highdim_theory_suite,
     "all": lambda: build_common_suite() + build_hard_suite(),

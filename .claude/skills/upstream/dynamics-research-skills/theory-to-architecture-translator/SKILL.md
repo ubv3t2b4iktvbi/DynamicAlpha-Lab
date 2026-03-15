@@ -1,6 +1,6 @@
 ---
 name: theory-to-architecture-translator
-description: Use this skill when the user wants to convert theory objects such as slow-fast structure, order parameters, renormalization-group ideas, macro equations, control signals, or online system identification into concrete modules, losses, conditioning paths, or architecture changes. It also works in the reverse direction: from architecture back to theory.
+description: "Use this skill when the user wants to convert theory objects such as slow-fast structure, order parameters, renormalization-group ideas, macro equations, control signals, or online system identification into concrete modules, losses, conditioning paths, or architecture changes. It also works in the reverse direction: from architecture back to theory."
 license: MIT
 compatibility: Designed for skills-compatible agents that can read experiment tables, filenames, notes, and optional result artifacts. No network access is required. Optional Python or shell access helps inspect files such as .npz outputs.
 metadata:

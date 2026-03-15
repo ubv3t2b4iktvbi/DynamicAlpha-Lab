@@ -15,6 +15,7 @@ from .ngrc import (
     ResidualNGRCConfig,
     ResidualRCNGRCConfig,
     PureNGRCModel,
+    TakensRGResidualNGRCModel,
     HybridRCNGRCModel,
     SlowSINDyDeltaNGRCModel,
     SlowSINDyDeltaHybridModel,

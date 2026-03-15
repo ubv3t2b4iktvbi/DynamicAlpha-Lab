@@ -9,18 +9,25 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from ..attractor_prior import WSGAConfig
 from ..benchmarks import build_suite
 from ..experiment import run_benchmark_suite
 from ..factors import DynamicsFeatureConfig, FactorMiningConfig, analyze_signal_properties, load_selected_factor_library
 from ..models.rc import RCConfig
 from ..pipeline import run_factor_mining_suite
 from ..selection import expand_model_group_names, get_model_spec
-from ..systems import simulate_task, split_series
+from ..systems import simulate_task, split_series, task_metadata_columns
 from ..utils import ensure_dir
 from .coordinate_analysis import run_coordinate_analysis_suite
 
 
 FASTSLOW_COORDINATE_NAMES = frozenset({"fastslow", "theory_fastslow"})
+
+
+def _task_slice(df: pd.DataFrame, task: str) -> pd.DataFrame:
+    if df.empty or "task" not in df.columns:
+        return pd.DataFrame()
+    return df[df["task"] == task].reset_index(drop=True)
 
 
 def _load_factor_config(path: str | None) -> tuple[dict, dict, dict]:
@@ -135,6 +142,7 @@ def _preanalysis_for_tasks(
                 "system": task.system,
                 "task_family": task.family,
                 "task_regime": task.regime,
+                **task_metadata_columns(task),
                 **profile,
                 "dominant_axes": _top_axes_text(profile),
                 "fastslow_coordinate_hypothesis": bool(allow_fastslow),
@@ -1439,6 +1447,7 @@ def run_research_loop(
     full_library_search: bool = True,
     factor_config_path: str | None = "configs/factor_mining.yaml",
     identifier_kinds: Sequence[str] | None = None,
+    coordinate_wsga_config: WSGAConfig | None = None,
     skip_benchmarks: bool = False,
     skip_coordinate_analysis: bool = False,
     skip_factor_mining: bool = False,
@@ -1450,7 +1459,19 @@ def run_research_loop(
     preanalysis_df = pd.DataFrame()
     benchmark_df = pd.DataFrame()
     coordinate_df = pd.DataFrame()
-    factor_df = pd.DataFrame()
+    # Keep the empty factor-mining branch schema-compatible with downstream summaries.
+    factor_df = pd.DataFrame(
+        columns=[
+            "task",
+            "identifier_kind",
+            "selected_factors",
+            "validation_score",
+            "selected_koopman_score",
+            "final_rmse50",
+            "test_rmse50",
+            "num_selected",
+        ]
+    )
     manifest: dict[str, str] = {}
     task_coordinate_kinds: dict[str, tuple[str, ...]] | None = None
     task_reasons: dict[str, str] = {}
@@ -1482,6 +1503,7 @@ def run_research_loop(
             coordinate_kinds=coordinate_kinds,
             task_coordinate_kinds=task_coordinate_kinds,
             delay_dim=delay_dim,
+            wsga_config=coordinate_wsga_config,
         )
         manifest["coordinate_analysis"] = str(coordinate_out)
 
@@ -1575,9 +1597,9 @@ def run_research_loop(
         theory_evidence_rows.extend(
             _task_theory_evidence(
                 task=task,
-                coordinate_task_df=coordinate_df[coordinate_df["task"] == task].reset_index(drop=True),
-                factor_task_df=factor_df[factor_df["task"] == task].reset_index(drop=True),
-                benchmark_task_df=benchmark_df[benchmark_df["task"] == task].reset_index(drop=True),
+                coordinate_task_df=_task_slice(coordinate_df, task),
+                factor_task_df=_task_slice(factor_df, task),
+                benchmark_task_df=_task_slice(benchmark_df, task),
                 gate_decision=gate_by_task.get(task),
             )
         )
@@ -1598,9 +1620,9 @@ def run_research_loop(
         research_row = _task_research_analysis(
             task,
             preanalysis_row=preanalysis_by_task.get(task),
-            coordinate_task_df=coordinate_df[coordinate_df["task"] == task].reset_index(drop=True),
-            factor_task_df=factor_df[factor_df["task"] == task].reset_index(drop=True),
-            benchmark_task_df=benchmark_df[benchmark_df["task"] == task].reset_index(drop=True),
+            coordinate_task_df=_task_slice(coordinate_df, task),
+            factor_task_df=_task_slice(factor_df, task),
+            benchmark_task_df=_task_slice(benchmark_df, task),
             gate_decision=gate_by_task.get(task),
         )
         theory_research_rows.append(research_row)
@@ -1608,8 +1630,8 @@ def run_research_loop(
             _task_quant_factor_update_plan(
                 task,
                 preanalysis_row=preanalysis_by_task.get(task),
-                factor_task_df=factor_df[factor_df["task"] == task].reset_index(drop=True),
-                benchmark_task_df=benchmark_df[benchmark_df["task"] == task].reset_index(drop=True),
+                factor_task_df=_task_slice(factor_df, task),
+                benchmark_task_df=_task_slice(benchmark_df, task),
                 theory_research_row=research_row,
                 gate_decision=gate_by_task.get(task),
             )

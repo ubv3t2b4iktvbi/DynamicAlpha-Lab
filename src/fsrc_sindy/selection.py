@@ -7,6 +7,7 @@ import numpy as np
 from tqdm.auto import tqdm
 
 from .factors.base import DynamicsFeatureConfig, FactorSpec
+from .factors.repository import rg_readout_specs, sparse_rg_gate_specs, sf_rg_gated_readout_specs, sf_rg_interaction_readout_specs
 from .fastslow import FastSlowConfig
 from .metrics import evaluate_horizons
 from .models import (
@@ -31,6 +32,7 @@ from .models import (
     SlowSINDyLevelLinearModel,
     SlowSINDyLevelRCModel,
     SlowSINDyOnlyModel,
+    TakensRGResidualNGRCModel,
 )
 
 
@@ -55,10 +57,18 @@ MODEL_SPECS: dict[str, ModelSpec] = {
     "rc_raw": ModelSpec("reservoir", False, False, True, False, "none", "RC baseline with direct readout."),
     "rc_fastslow_readout": ModelSpec("reservoir", True, False, True, False, "none", "RC baseline with fast/slow readout features."),
     "rc_factor_readout": ModelSpec("reservoir", False, False, True, False, "none", "RC baseline with task-selected factor readout."),
+    "rc_rg_readout": ModelSpec("reservoir", False, False, True, False, "none", "RC baseline with RG-style order/control/noise readout."),
+    "rc_sf_rg_gated": ModelSpec("reservoir", True, False, True, False, "none", "RC with sparse SF-RG gated readout using only a few mechanistic interaction terms."),
+    "rc_sf_rg_interaction": ModelSpec("reservoir", True, False, True, False, "none", "RC with hierarchical SF + RG readout including cross-scale interaction terms."),
     "ngrc_raw": ModelSpec("ngrc", False, False, False, True, "none", "NGRC/NVAR baseline on delay coordinates."),
     "ngrc_fastslow_readout": ModelSpec("ngrc", True, False, False, True, "none", "NGRC augmented with fast/slow readout features."),
     "ngrc_factor_readout": ModelSpec("ngrc", False, False, False, True, "none", "NGRC baseline with task-selected factor readout."),
+    "ngrc_rg_readout": ModelSpec("ngrc", False, False, False, True, "none", "NGRC baseline with RG-style order/control/noise readout."),
+    "ngrc_takens_rg_residual": ModelSpec("ngrc", False, False, False, True, "none", "Takens-delay NGRC backbone with sparse RG-conditioned residual correction."),
+    "ngrc_sf_rg_gated": ModelSpec("ngrc", True, False, False, True, "none", "NGRC with sparse SF-RG gated readout using only a few mechanistic interaction terms."),
+    "ngrc_sf_rg_interaction": ModelSpec("ngrc", True, False, False, True, "none", "NGRC with hierarchical SF + RG readout including cross-scale interaction terms."),
     "hybrid_rc_ngrc_fastslow": ModelSpec("hybrid_memory", True, False, True, True, "none", "Joint RC + NGRC readout with fast/slow features."),
+    "hybrid_rc_ngrc_rg": ModelSpec("hybrid_memory", False, False, True, True, "none", "Joint RC + NGRC readout with RG-style macro variables."),
     "sindy_full": ModelSpec("sindy", True, False, False, False, "none", "Full observable SINDy proxy built from scalar fast/slow features."),
     "slow_sindy_only": ModelSpec("structured_sindy", True, True, False, False, "none", "Slow manifold SINDy backbone without residual closure."),
     "slow_sindy_delta_linear": ModelSpec("structured_residual", True, True, False, False, "delta_linear", "Slow SINDy backbone plus linear delta residual."),
@@ -98,6 +108,55 @@ MODEL_GROUPS: dict[str, list[str]] = {
     "general": ["rc_raw", "rc_fastslow_readout", "ngrc_raw", "ngrc_fastslow_readout", "hybrid_rc_ngrc_fastslow", "sindy_full"],
     "base":["rc_raw", "ngrc_raw"],
     "fastslow_ablation": ["rc_raw", "rc_fastslow_readout", "ngrc_raw", "ngrc_fastslow_readout"],
+    "rg_ablation": ["rc_raw", "rc_fastslow_readout", "rc_rg_readout", "ngrc_raw", "ngrc_fastslow_readout", "ngrc_rg_readout"],
+    "sf_rg_gated_ablation": [
+        "rc_raw",
+        "rc_fastslow_readout",
+        "rc_rg_readout",
+        "rc_sf_rg_gated",
+        "ngrc_raw",
+        "ngrc_fastslow_readout",
+        "ngrc_rg_readout",
+        "ngrc_sf_rg_gated",
+    ],
+    "ngrc_takens_rg_ablation": [
+        "ngrc_raw",
+        "ngrc_fastslow_readout",
+        "ngrc_rg_readout",
+        "ngrc_sf_rg_gated",
+        "ngrc_takens_rg_residual",
+    ],
+    "ngrc_takens_rg_boundary": [
+        "ngrc_raw",
+        "ngrc_fastslow_readout",
+        "ngrc_rg_readout",
+        "ngrc_sf_rg_gated",
+        "ngrc_takens_rg_residual",
+    ],
+    "sf_rg_ablation": [
+        "rc_raw",
+        "rc_fastslow_readout",
+        "rc_rg_readout",
+        "rc_sf_rg_interaction",
+        "ngrc_raw",
+        "ngrc_fastslow_readout",
+        "ngrc_rg_readout",
+        "ngrc_sf_rg_interaction",
+    ],
+    "sf_rg_gate_compare": [
+        "rc_fastslow_readout",
+        "rc_rg_readout",
+        "rc_sf_rg_interaction",
+        "rc_sf_rg_gated",
+        "ngrc_fastslow_readout",
+        "ngrc_rg_readout",
+        "ngrc_sf_rg_interaction",
+        "ngrc_sf_rg_gated",
+    ],
+    "rg_core": ["rc_rg_readout", "ngrc_rg_readout", "hybrid_rc_ngrc_rg"],
+    "sf_rg_gated_core": ["rc_sf_rg_gated", "ngrc_sf_rg_gated"],
+    "sf_rg_core": ["rc_sf_rg_interaction", "ngrc_sf_rg_interaction"],
+    "rg_memory": ["hybrid_rc_ngrc_fastslow", "hybrid_rc_ngrc_rg"],
     "memory_ablation": ["rc_fastslow_readout", "ngrc_fastslow_readout", "hybrid_rc_ngrc_fastslow"],
     "structured_ablation": ["slow_sindy_only", "slow_sindy_delta_linear", "slow_sindy_delta_rc", "slow_sindy_delta_ngrc", "slow_sindy_delta_hybrid"],
     "research_core": list(RESEARCH_MODEL_NAMES),
@@ -116,6 +175,54 @@ ABLATION_COMPARISONS = [
         "baseline": "ngrc_raw",
         "candidate": "ngrc_fastslow_readout",
         "hypothesis": "Fast/slow readout should help NGRC resolve latent slow context.",
+    },
+    {
+        "name": "rg_on_rc",
+        "baseline": "rc_fastslow_readout",
+        "candidate": "rc_rg_readout",
+        "hypothesis": "Explicit RG order/control/noise readout should improve multiscale transition handling beyond generic fast/slow features.",
+    },
+    {
+        "name": "rg_on_ngrc",
+        "baseline": "ngrc_fastslow_readout",
+        "candidate": "ngrc_rg_readout",
+        "hypothesis": "RG-inspired macro variables should help NGRC separate coarse-grained drift from fast agitation.",
+    },
+    {
+        "name": "sf_rg_interaction_on_rc",
+        "baseline": "rc_fastslow_readout",
+        "candidate": "rc_sf_rg_interaction",
+        "hypothesis": "Regime-conditioned SF readout should improve RC when macrostate and local fast/slow closure both matter.",
+    },
+    {
+        "name": "sf_rg_interaction_on_ngrc",
+        "baseline": "ngrc_fastslow_readout",
+        "candidate": "ngrc_sf_rg_interaction",
+        "hypothesis": "NGRC should benefit when RG macro variables modulate, rather than replace, the fast/slow readout basis.",
+    },
+    {
+        "name": "sf_rg_gated_on_rc",
+        "baseline": "rc_sf_rg_interaction",
+        "candidate": "rc_sf_rg_gated",
+        "hypothesis": "A sparse mechanistic gate should retain useful SF-RG conditioning while reducing overfitting from the full interaction surface.",
+    },
+    {
+        "name": "sf_rg_gated_on_ngrc",
+        "baseline": "ngrc_sf_rg_interaction",
+        "candidate": "ngrc_sf_rg_gated",
+        "hypothesis": "A sparse mechanistic gate should stabilize NGRC more than the full SF-RG interaction expansion.",
+    },
+    {
+        "name": "takens_rg_residual_on_ngrc",
+        "baseline": "ngrc_rg_readout",
+        "candidate": "ngrc_takens_rg_residual",
+        "hypothesis": "RG should work better as a residual regime conditioner on top of Takens delay dynamics than as a flat additive readout.",
+    },
+    {
+        "name": "rg_on_hybrid",
+        "baseline": "hybrid_rc_ngrc_fastslow",
+        "candidate": "hybrid_rc_ngrc_rg",
+        "hypothesis": "Hybrid memory should benefit when its readout is organized around RG order, control, and noise variables.",
     },
     {
         "name": "dual_memory_vs_single_memory",
@@ -365,6 +472,45 @@ def _coerce_feature_cfg(payload: Any) -> DynamicsFeatureConfig | None:
     raise TypeError(f"Unsupported feature config payload: {type(payload)!r}")
 
 
+def _coerce_fastslow_cfg(payload: Any) -> FastSlowConfig | None:
+    if payload is None or isinstance(payload, FastSlowConfig):
+        return payload
+    if isinstance(payload, dict):
+        return FastSlowConfig(**payload)
+    raise TypeError(f"Unsupported fast/slow config payload: {type(payload)!r}")
+
+
+def _coerce_ngrc_cfg(payload: Any) -> NGRCConfig:
+    if isinstance(payload, NGRCConfig):
+        return payload
+    if isinstance(payload, dict):
+        data = dict(payload)
+        data["fs_cfg"] = _coerce_fastslow_cfg(data.get("fs_cfg"))
+        return NGRCConfig(**data)
+    raise TypeError(f"Unsupported NGRC config payload: {type(payload)!r}")
+
+
+def _search_space_override(model_name: str, model_context: dict[str, Any] | None) -> list[Any] | None:
+    if model_context is None:
+        return None
+    payload = model_context.get("search_space_override")
+    if payload is None:
+        payload = model_context.get("search_space")
+    if payload is None:
+        return None
+    if model_name in {
+        "ngrc_raw",
+        "ngrc_fastslow_readout",
+        "ngrc_factor_readout",
+        "ngrc_rg_readout",
+        "ngrc_takens_rg_residual",
+        "ngrc_sf_rg_gated",
+        "ngrc_sf_rg_interaction",
+    }:
+        return [_coerce_ngrc_cfg(item) for item in payload]
+    return list(payload)
+
+
 def _factor_readout_context(
     model_name: str,
     model_context: dict[str, Any] | None,
@@ -381,21 +527,46 @@ def _factor_readout_context(
     return factor_specs, identifier_kind, feature_cfg
 
 
-def get_search_space(model_name: str, grid_mode: str, short_train: bool, data_dt: float) -> list[Any]:
+def get_search_space(
+    model_name: str,
+    grid_mode: str,
+    short_train: bool,
+    data_dt: float,
+    model_context: dict[str, Any] | None = None,
+) -> list[Any]:
+    override = _search_space_override(model_name, model_context)
+    if override is not None:
+        return override
     if model_name == "rc_raw":
         return build_rc_grid(grid_mode)
     if model_name == "rc_fastslow_readout":
         return with_fastslow_cfgs(build_rc_grid(grid_mode), build_fastslow_grid(data_dt=data_dt, mode=grid_mode, short_train=short_train))
     if model_name == "rc_factor_readout":
         return build_rc_grid(grid_mode)
+    if model_name == "rc_rg_readout":
+        return build_rc_grid(grid_mode)
+    if model_name == "rc_sf_rg_gated":
+        return with_fastslow_cfgs(build_rc_grid(grid_mode), build_fastslow_grid(data_dt=data_dt, mode=grid_mode, short_train=short_train))
+    if model_name == "rc_sf_rg_interaction":
+        return with_fastslow_cfgs(build_rc_grid(grid_mode), build_fastslow_grid(data_dt=data_dt, mode=grid_mode, short_train=short_train))
     if model_name == "ngrc_raw":
         return build_ngrc_grid(grid_mode, short_train=short_train)
     if model_name == "ngrc_fastslow_readout":
         return with_fastslow_cfgs(build_ngrc_grid(grid_mode, short_train=short_train), build_fastslow_grid(data_dt=data_dt, mode=grid_mode, short_train=short_train))
     if model_name == "ngrc_factor_readout":
         return build_ngrc_grid(grid_mode, short_train=short_train)
+    if model_name == "ngrc_rg_readout":
+        return build_ngrc_grid(grid_mode, short_train=short_train)
+    if model_name == "ngrc_takens_rg_residual":
+        return build_ngrc_grid(grid_mode, short_train=short_train)
+    if model_name == "ngrc_sf_rg_gated":
+        return with_fastslow_cfgs(build_ngrc_grid(grid_mode, short_train=short_train), build_fastslow_grid(data_dt=data_dt, mode=grid_mode, short_train=short_train))
+    if model_name == "ngrc_sf_rg_interaction":
+        return with_fastslow_cfgs(build_ngrc_grid(grid_mode, short_train=short_train), build_fastslow_grid(data_dt=data_dt, mode=grid_mode, short_train=short_train))
     if model_name == "hybrid_rc_ngrc_fastslow":
         return with_fastslow_cfgs(build_rc_ngrc_grid(grid_mode, short_train=short_train), build_fastslow_grid(data_dt=data_dt, mode=grid_mode, short_train=short_train))
+    if model_name == "hybrid_rc_ngrc_rg":
+        return build_rc_ngrc_grid(grid_mode, short_train=short_train)
     if model_name == "sindy_full":
         return build_full_sindy_grid(grid_mode, data_dt=data_dt)
     if model_name == "slow_sindy_only":
@@ -450,6 +621,30 @@ def instantiate_model(
             readout_identifier_kind=identifier_kind,
             readout_feature_cfg=feature_cfg,
         )
+    if model_name == "rc_rg_readout":
+        return PureRCModel(
+            cfg=cfg,
+            template_factory=template_factory,
+            fs_cfg=getattr(cfg, "fs_cfg", None) or default_slow_cfg.fs_cfg,
+            use_fastslow_readout=False,
+            readout_factor_specs=rg_readout_specs(),
+        )
+    if model_name == "rc_sf_rg_gated":
+        return PureRCModel(
+            cfg=cfg,
+            template_factory=template_factory,
+            fs_cfg=getattr(cfg, "fs_cfg", None) or default_slow_cfg.fs_cfg,
+            use_fastslow_readout=False,
+            readout_factor_specs=sf_rg_gated_readout_specs(),
+        )
+    if model_name == "rc_sf_rg_interaction":
+        return PureRCModel(
+            cfg=cfg,
+            template_factory=template_factory,
+            fs_cfg=getattr(cfg, "fs_cfg", None) or default_slow_cfg.fs_cfg,
+            use_fastslow_readout=False,
+            readout_factor_specs=sf_rg_interaction_readout_specs(),
+        )
     if model_name == "ngrc_raw":
         return PureNGRCModel(cfg=cfg, fs_cfg=default_slow_cfg.fs_cfg, use_fastslow_readout=False)
     if model_name == "ngrc_fastslow_readout":
@@ -464,8 +659,66 @@ def instantiate_model(
             readout_identifier_kind=identifier_kind,
             readout_feature_cfg=feature_cfg,
         )
+    if model_name == "ngrc_rg_readout":
+        return PureNGRCModel(
+            cfg=cfg,
+            fs_cfg=getattr(cfg, "fs_cfg", None) or default_slow_cfg.fs_cfg,
+            use_fastslow_readout=False,
+            readout_factor_specs=rg_readout_specs(),
+        )
+    if model_name == "ngrc_takens_rg_residual":
+        factor_specs = sparse_rg_gate_specs()
+        identifier_kind = None
+        feature_cfg = None
+        correction_mode = "interaction"
+        rg_control_mode = "none"
+        rg_lag = 1
+        random_feature_seed = 0
+        if model_context is not None:
+            custom_specs = _coerce_factor_specs(model_context.get("readout_factor_specs"))
+            if custom_specs:
+                factor_specs = custom_specs
+            identifier_kind = str(model_context.get("readout_identifier_kind", "")).strip() or None
+            feature_cfg = _coerce_feature_cfg(model_context.get("readout_feature_cfg"))
+            correction_mode = str(model_context.get("correction_mode", correction_mode))
+            rg_control_mode = str(model_context.get("rg_control_mode", rg_control_mode))
+            rg_lag = int(model_context.get("rg_lag", rg_lag))
+            random_feature_seed = int(model_context.get("random_feature_seed", random_feature_seed))
+        return TakensRGResidualNGRCModel(
+            cfg=cfg,
+            fs_cfg=getattr(cfg, "fs_cfg", None) or default_slow_cfg.fs_cfg,
+            readout_factor_specs=factor_specs,
+            readout_identifier_kind=identifier_kind,
+            readout_feature_cfg=feature_cfg,
+            correction_mode=correction_mode,
+            rg_control_mode=rg_control_mode,
+            rg_lag=rg_lag,
+            random_feature_seed=random_feature_seed,
+        )
+    if model_name == "ngrc_sf_rg_gated":
+        return PureNGRCModel(
+            cfg=cfg,
+            fs_cfg=getattr(cfg, "fs_cfg", None) or default_slow_cfg.fs_cfg,
+            use_fastslow_readout=False,
+            readout_factor_specs=sf_rg_gated_readout_specs(),
+        )
+    if model_name == "ngrc_sf_rg_interaction":
+        return PureNGRCModel(
+            cfg=cfg,
+            fs_cfg=getattr(cfg, "fs_cfg", None) or default_slow_cfg.fs_cfg,
+            use_fastslow_readout=False,
+            readout_factor_specs=sf_rg_interaction_readout_specs(),
+        )
     if model_name == "hybrid_rc_ngrc_fastslow":
         return HybridRCNGRCModel(cfg=cfg, template_factory=template_factory, fs_cfg=getattr(cfg, "fs_cfg", None), use_fastslow_readout=True)
+    if model_name == "hybrid_rc_ngrc_rg":
+        return HybridRCNGRCModel(
+            cfg=cfg,
+            template_factory=template_factory,
+            fs_cfg=getattr(cfg, "fs_cfg", None) or default_slow_cfg.fs_cfg,
+            use_fastslow_readout=False,
+            readout_factor_specs=rg_readout_specs(),
+        )
     if model_name == "sindy_full":
         return FullObservableSINDy(cfg)
     if model_name == "slow_sindy_only":
@@ -517,7 +770,13 @@ def select_best_model(
     data_dt: float,
     model_context: dict[str, Any] | None = None,
 ):
-    search_space = get_search_space(model_name=model_name, grid_mode=grid_mode, short_train=short_train, data_dt=data_dt)
+    search_space = get_search_space(
+        model_name=model_name,
+        grid_mode=grid_mode,
+        short_train=short_train,
+        data_dt=data_dt,
+        model_context=model_context,
+    )
     best_model = None
     best_cfg = None
     best_metrics = None

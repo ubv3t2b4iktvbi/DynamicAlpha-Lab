@@ -13,6 +13,20 @@ from .loop import run_research_loop
 
 FASTSLOW_COORDINATE_NAMES = frozenset({"fastslow", "theory_fastslow"})
 DEFAULT_FASTSLOW_COORDINATES = ("raw", "delay", "fastslow", "theory_fastslow", "factor")
+TASK_META_COLUMNS = (
+    "task_metadata",
+    "sweep_suite",
+    "sweep_group",
+    "sweep_axis",
+    "sweep_value",
+    "sweep_label",
+    "observability_profile",
+    "noise_profile",
+    "slow_to_fast_coupling",
+    "fast_to_slow_coupling",
+    "matched_noise_energy",
+)
+SWEEP_GROUP_ORDER = ("slow_gating_strength", "observability", "heteroscedasticity")
 
 
 def _clip01(x: float) -> float:
@@ -32,6 +46,18 @@ def _best_row(df: pd.DataFrame, *, sort_by: str, ascending: bool = True) -> pd.S
         return None
     ordered = df.sort_values(sort_by, ascending=ascending, na_position="last").reset_index(drop=True)
     return ordered.iloc[0] if not ordered.empty else None
+
+
+def _task_meta_from_df(df: pd.DataFrame) -> dict[str, object]:
+    meta: dict[str, object] = {}
+    for col in TASK_META_COLUMNS:
+        if col not in df.columns:
+            continue
+        series = df[col].dropna()
+        if series.empty:
+            continue
+        meta[col] = series.iloc[0]
+    return meta
 
 
 def _fastslow_coordinate_score(row: pd.Series) -> float:
@@ -67,34 +93,34 @@ def summarize_fastslow_benchmarks(benchmark_df: pd.DataFrame) -> pd.DataFrame:
             sort_by="rmse@50",
         )
         best_overall = _best_row(task_df, sort_by="rmse@50")
-        rows.append(
-            {
-                "task": task,
-                "rc_raw_rmse50": float(rc_raw["rmse@50"]) if rc_raw is not None else float("nan"),
-                "rc_fastslow_rmse50": float(rc_fastslow["rmse@50"]) if rc_fastslow is not None else float("nan"),
-                "rc_fastslow_gain_pct": _relative_gain_pct(
-                    float(rc_raw["rmse@50"]) if rc_raw is not None else float("nan"),
-                    float(rc_fastslow["rmse@50"]) if rc_fastslow is not None else float("nan"),
-                ),
-                "ngrc_raw_rmse50": float(ngrc_raw["rmse@50"]) if ngrc_raw is not None else float("nan"),
-                "ngrc_fastslow_rmse50": float(ngrc_fastslow["rmse@50"]) if ngrc_fastslow is not None else float("nan"),
-                "ngrc_fastslow_gain_pct": _relative_gain_pct(
-                    float(ngrc_raw["rmse@50"]) if ngrc_raw is not None else float("nan"),
-                    float(ngrc_fastslow["rmse@50"]) if ngrc_fastslow is not None else float("nan"),
-                ),
-                "best_fastslow_variant": str(best_fastslow["variant"]) if best_fastslow is not None else "",
-                "best_fastslow_rmse50": float(best_fastslow["rmse@50"]) if best_fastslow is not None else float("nan"),
-                "best_factor_variant": str(best_factor["variant"]) if best_factor is not None else "",
-                "best_factor_rmse50": float(best_factor["rmse@50"]) if best_factor is not None else float("nan"),
-                "factor_vs_best_fastslow_gain_pct": _relative_gain_pct(
-                    float(best_fastslow["rmse@50"]) if best_fastslow is not None else float("nan"),
-                    float(best_factor["rmse@50"]) if best_factor is not None else float("nan"),
-                ),
-                "best_factor_names": str(best_factor.get("readout_factor_names", "")) if best_factor is not None else "",
-                "best_overall_variant": str(best_overall["variant"]) if best_overall is not None else "",
-                "best_overall_rmse50": float(best_overall["rmse@50"]) if best_overall is not None else float("nan"),
-            }
-        )
+        row = {
+            "task": task,
+            "rc_raw_rmse50": float(rc_raw["rmse@50"]) if rc_raw is not None else float("nan"),
+            "rc_fastslow_rmse50": float(rc_fastslow["rmse@50"]) if rc_fastslow is not None else float("nan"),
+            "rc_fastslow_gain_pct": _relative_gain_pct(
+                float(rc_raw["rmse@50"]) if rc_raw is not None else float("nan"),
+                float(rc_fastslow["rmse@50"]) if rc_fastslow is not None else float("nan"),
+            ),
+            "ngrc_raw_rmse50": float(ngrc_raw["rmse@50"]) if ngrc_raw is not None else float("nan"),
+            "ngrc_fastslow_rmse50": float(ngrc_fastslow["rmse@50"]) if ngrc_fastslow is not None else float("nan"),
+            "ngrc_fastslow_gain_pct": _relative_gain_pct(
+                float(ngrc_raw["rmse@50"]) if ngrc_raw is not None else float("nan"),
+                float(ngrc_fastslow["rmse@50"]) if ngrc_fastslow is not None else float("nan"),
+            ),
+            "best_fastslow_variant": str(best_fastslow["variant"]) if best_fastslow is not None else "",
+            "best_fastslow_rmse50": float(best_fastslow["rmse@50"]) if best_fastslow is not None else float("nan"),
+            "best_factor_variant": str(best_factor["variant"]) if best_factor is not None else "",
+            "best_factor_rmse50": float(best_factor["rmse@50"]) if best_factor is not None else float("nan"),
+            "factor_vs_best_fastslow_gain_pct": _relative_gain_pct(
+                float(best_fastslow["rmse@50"]) if best_fastslow is not None else float("nan"),
+                float(best_factor["rmse@50"]) if best_factor is not None else float("nan"),
+            ),
+            "best_factor_names": str(best_factor.get("readout_factor_names", "")) if best_factor is not None else "",
+            "best_overall_variant": str(best_overall["variant"]) if best_overall is not None else "",
+            "best_overall_rmse50": float(best_overall["rmse@50"]) if best_overall is not None else float("nan"),
+        }
+        row.update(_task_meta_from_df(task_df))
+        rows.append(row)
     return pd.DataFrame(rows).sort_values("task").reset_index(drop=True)
 
 
@@ -124,20 +150,20 @@ def summarize_fastslow_coordinates(coordinate_df: pd.DataFrame) -> pd.DataFrame:
             wins.append("Spectral")
         if best_koopman is not None and str(best_koopman["coordinate"]) in FASTSLOW_COORDINATE_NAMES:
             wins.append("Koopman")
-        rows.append(
-            {
-                "task": task,
-                "best_closure_coordinate": str(best_closure["coordinate"]) if best_closure is not None else "",
-                "best_spectral_coordinate": str(best_spectral["coordinate"]) if best_spectral is not None else "",
-                "best_koopman_coordinate": str(best_koopman["coordinate"]) if best_koopman is not None else "",
-                "best_fastslow_coordinate": str(best_fastslow["coordinate"]) if best_fastslow is not None else "",
-                "fastslow_wins": "; ".join(wins),
-                "fastslow_markov_gain_ratio": float(best_fastslow["markov_gain_ratio"]) if best_fastslow is not None else float("nan"),
-                "fastslow_spectral_corr": float(best_fastslow["spectral_radius_corr"]) if best_fastslow is not None else float("nan"),
-                "fastslow_spectral_rmse": float(best_fastslow["spectral_radius_rmse"]) if best_fastslow is not None else float("nan"),
-                "fastslow_koopman_score": float(best_fastslow["koopman_invariance_score"]) if best_fastslow is not None else float("nan"),
-            }
-        )
+        row = {
+            "task": task,
+            "best_closure_coordinate": str(best_closure["coordinate"]) if best_closure is not None else "",
+            "best_spectral_coordinate": str(best_spectral["coordinate"]) if best_spectral is not None else "",
+            "best_koopman_coordinate": str(best_koopman["coordinate"]) if best_koopman is not None else "",
+            "best_fastslow_coordinate": str(best_fastslow["coordinate"]) if best_fastslow is not None else "",
+            "fastslow_wins": "; ".join(wins),
+            "fastslow_markov_gain_ratio": float(best_fastslow["markov_gain_ratio"]) if best_fastslow is not None else float("nan"),
+            "fastslow_spectral_corr": float(best_fastslow["spectral_radius_corr"]) if best_fastslow is not None else float("nan"),
+            "fastslow_spectral_rmse": float(best_fastslow["spectral_radius_rmse"]) if best_fastslow is not None else float("nan"),
+            "fastslow_koopman_score": float(best_fastslow["koopman_invariance_score"]) if best_fastslow is not None else float("nan"),
+        }
+        row.update(_task_meta_from_df(task_df))
+        rows.append(row)
     return pd.DataFrame(rows).sort_values("task").reset_index(drop=True)
 
 
@@ -154,8 +180,176 @@ def summarize_fastslow_factors(factor_df: pd.DataFrame) -> pd.DataFrame:
         "final_rmse50",
         "test_rmse50",
     ]
-    existing = [col for col in cols if col in ordered.columns]
+    existing = [col for col in [*TASK_META_COLUMNS, *cols] if col in ordered.columns]
     return ordered[existing].sort_values("task").reset_index(drop=True)
+
+
+def summarize_fastslow_mechanism_sweeps(
+    benchmark_summary: pd.DataFrame,
+    coordinate_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    if benchmark_summary.empty and coordinate_summary.empty:
+        return pd.DataFrame()
+    bench = benchmark_summary.copy()
+    coords = coordinate_summary.copy()
+    coord_cols = [
+        "task",
+        *[col for col in TASK_META_COLUMNS if col in coords.columns],
+        "best_fastslow_coordinate",
+        "fastslow_wins",
+        "fastslow_markov_gain_ratio",
+        "fastslow_spectral_corr",
+        "fastslow_spectral_rmse",
+        "fastslow_koopman_score",
+    ]
+    if not coords.empty:
+        coords = coords[coord_cols]
+    if bench.empty:
+        merged = coords
+    elif coords.empty:
+        merged = bench
+    else:
+        merged = bench.merge(
+            coords,
+            on=["task", *[col for col in TASK_META_COLUMNS if col in bench.columns and col in coords.columns]],
+            how="outer",
+        )
+    if "sweep_group" not in merged.columns:
+        return pd.DataFrame()
+    merged["mean_fastslow_gain_pct"] = merged[[col for col in ("rc_fastslow_gain_pct", "ngrc_fastslow_gain_pct") if col in merged.columns]].mean(axis=1, skipna=True)
+    merged["fastslow_lift_count"] = merged[[col for col in ("rc_fastslow_gain_pct", "ngrc_fastslow_gain_pct") if col in merged.columns]].gt(0).sum(axis=1)
+    return merged.sort_values(["sweep_group", "sweep_value", "task"], na_position="last").reset_index(drop=True)
+
+
+def _group_sort_key(name: object) -> tuple[int, str]:
+    text = str(name)
+    try:
+        return (SWEEP_GROUP_ORDER.index(text), text)
+    except ValueError:
+        return (len(SWEEP_GROUP_ORDER), text)
+
+
+def _non_nan(values: Sequence[float]) -> np.ndarray:
+    arr = np.asarray(list(values), dtype=float)
+    return arr[np.isfinite(arr)]
+
+
+def _monotone_label(values: Sequence[float]) -> str:
+    arr = _non_nan(values)
+    if len(arr) < 2:
+        return "insufficient data"
+    diffs = np.diff(arr)
+    if np.all(diffs >= -1e-6):
+        return "non-decreasing"
+    if np.all(diffs <= 1e-6):
+        return "non-increasing"
+    return "non-monotone"
+
+
+def _trend_corr(x: Sequence[float], y: Sequence[float]) -> float:
+    x_arr = np.asarray(list(x), dtype=float)
+    y_arr = np.asarray(list(y), dtype=float)
+    mask = np.isfinite(x_arr) & np.isfinite(y_arr)
+    if mask.sum() < 2:
+        return float("nan")
+    return float(np.corrcoef(x_arr[mask], y_arr[mask])[0, 1])
+
+
+def _format_gain(value: float) -> str:
+    if not np.isfinite(value):
+        return "nan"
+    return f"{value:.2f}%"
+
+
+def _render_group_interpretation(group_name: str, df: pd.DataFrame) -> list[str]:
+    ordered = df.sort_values("sweep_value", na_position="last").reset_index(drop=True)
+    lines: list[str] = []
+    if group_name == "slow_gating_strength":
+        mean_gain = ordered["mean_fastslow_gain_pct"] if "mean_fastslow_gain_pct" in ordered.columns else pd.Series(dtype=float)
+        corr = _trend_corr(ordered["sweep_value"], mean_gain)
+        lines.append(
+            f"- mean fast/slow lift vs slow-to-fast coupling: {_monotone_label(mean_gain)}"
+            + (f" (corr={corr:.3f})" if np.isfinite(corr) else "")
+        )
+        lift_levels = int(ordered["fastslow_lift_count"].ge(1).sum()) if "fastslow_lift_count" in ordered.columns else 0
+        lines.append(f"- tasks with any benchmark lift across the sweep: {lift_levels}/{len(ordered)}")
+    elif group_name == "observability":
+        if "mean_fastslow_gain_pct" in ordered.columns and "sweep_label" in ordered.columns:
+            best_row = ordered.sort_values("mean_fastslow_gain_pct", ascending=False, na_position="last").iloc[0]
+            if "observability_profile" in ordered.columns:
+                baseline = ordered[ordered["observability_profile"] == "slow0"]["mean_fastslow_gain_pct"]
+            else:
+                baseline = pd.Series(dtype=float)
+            baseline_gain = float(baseline.iloc[0]) if not baseline.empty else float("nan")
+            delta = float(best_row.get("mean_fastslow_gain_pct", np.nan) - baseline_gain)
+            lines.append(
+                f"- strongest mean lift appears under `{best_row.get('sweep_label', '')}`: {_format_gain(float(best_row.get('mean_fastslow_gain_pct', np.nan)))}"
+            )
+            if np.isfinite(delta):
+                lines.append(f"- relative to `slow0`, the best observability condition changes mean lift by {_format_gain(delta)}")
+    elif group_name == "heteroscedasticity":
+        if "matched_noise_energy" in ordered.columns:
+            clustered = ordered[ordered["matched_noise_energy"].astype(str).isin(["True", "1", "true"])]
+        else:
+            clustered = ordered.iloc[0:0]
+        if "noise_profile" in ordered.columns:
+            homoskedastic = ordered[ordered["noise_profile"] == "homoskedastic"]
+        else:
+            homoskedastic = ordered.iloc[0:0]
+        clustered_gain = float(clustered["mean_fastslow_gain_pct"].iloc[0]) if not clustered.empty else float("nan")
+        hom_gain = float(homoskedastic["mean_fastslow_gain_pct"].iloc[0]) if not homoskedastic.empty else float("nan")
+        delta = clustered_gain - hom_gain
+        if np.isfinite(hom_gain) or np.isfinite(clustered_gain):
+            lines.append(f"- homoskedastic mean lift: {_format_gain(hom_gain)}")
+            lines.append(f"- matched clustered-noise mean lift: {_format_gain(clustered_gain)}")
+        if np.isfinite(delta):
+            lines.append(f"- clustered noise changes mean lift by {_format_gain(delta)} under matched observation-noise RMS")
+    return lines
+
+
+def render_fastslow_mechanism_report(
+    *,
+    suite: str,
+    sweep_summary: pd.DataFrame,
+) -> str:
+    lines = [
+        "# Fast-Slow Mechanism Sweep Report",
+        "",
+        f"- suite: {suite}",
+        f"- sweep rows: {len(sweep_summary)}",
+        "",
+    ]
+    if sweep_summary.empty:
+        lines.append("No mechanism sweep metadata was detected in this run.")
+        return "\n".join(lines)
+    for group_name, group_df in sorted(sweep_summary.groupby("sweep_group"), key=lambda item: _group_sort_key(item[0])):
+        ordered = group_df.sort_values("sweep_value", na_position="last").reset_index(drop=True)
+        lines.extend([f"## {group_name.replace('_', ' ').title()}", ""])
+        cols = [
+            col
+            for col in [
+                "task",
+                "sweep_label",
+                "sweep_value",
+                "rc_fastslow_gain_pct",
+                "ngrc_fastslow_gain_pct",
+                "mean_fastslow_gain_pct",
+                "best_fastslow_coordinate",
+                "fastslow_wins",
+                "fastslow_markov_gain_ratio",
+                "fastslow_koopman_score",
+            ]
+            if col in ordered.columns
+        ]
+        lines.append(ordered[cols].to_markdown(index=False))
+        lines.extend(["", "### Interpretation", ""])
+        interpretation = _render_group_interpretation(group_name, ordered)
+        if interpretation:
+            lines.extend(interpretation)
+        else:
+            lines.append("- No interpretation available.")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _records(df: pd.DataFrame) -> list[dict[str, object]]:
@@ -266,6 +460,7 @@ def run_fastslow_validation(
     benchmark_summary = summarize_fastslow_benchmarks(result["benchmarks"])
     coordinate_summary = summarize_fastslow_coordinates(result["coordinate_analysis"])
     factor_summary = summarize_fastslow_factors(result["factor_mining"])
+    mechanism_summary = summarize_fastslow_mechanism_sweeps(benchmark_summary, coordinate_summary)
     report_path = out_path / "fastslow_validation_report.md"
     report_path.write_text(
         render_fastslow_validation_report(
@@ -277,6 +472,14 @@ def run_fastslow_validation(
         ),
         encoding="utf-8",
     )
+    mechanism_report_path = out_path / "fastslow_mechanism_report.md"
+    mechanism_report_path.write_text(
+        render_fastslow_mechanism_report(
+            suite=suite,
+            sweep_summary=mechanism_summary,
+        ),
+        encoding="utf-8",
+    )
     summary_path = out_path / "fastslow_validation_summary.json"
     summary_path.write_text(
         json.dumps(
@@ -285,6 +488,7 @@ def run_fastslow_validation(
                 "benchmarks": _records(benchmark_summary),
                 "coordinates": _records(coordinate_summary),
                 "factors": _records(factor_summary),
+                "mechanism_sweeps": _records(mechanism_summary),
             },
             ensure_ascii=False,
             indent=2,
@@ -292,5 +496,6 @@ def run_fastslow_validation(
         encoding="utf-8",
     )
     result["manifest"]["fastslow_validation_report"] = str(report_path)
+    result["manifest"]["fastslow_mechanism_report"] = str(mechanism_report_path)
     result["manifest"]["fastslow_validation_summary"] = str(summary_path)
     return result

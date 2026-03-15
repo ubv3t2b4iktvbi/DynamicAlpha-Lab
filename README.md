@@ -347,6 +347,7 @@ python scripts/run_research_loop.py --suite smoke --tasks vanderpol_smoke --out_
 项目内有一组专用 skill，源码放在 `.agents/skills/project/`，需要跨工具链复用时会镜像到 `.claude/skills/project/`：
 
 - `dynamics-factor-miner`
+- `dynamics-literature-factor-updater`
 - `factor-suite-orchestrator`
 - `factor-review-archivist`
 - `physics-identifier-swapper`
@@ -410,6 +411,7 @@ pip install -r requirements.txt
 - `src/fsrc_sindy/research/loop.py` now adds an identify-mode preanalysis gate before validation, writes gate decisions into `validation_gate.json`, and produces a theory-oriented evidence report in `theory_evidence.md`.
 - `src/fsrc_sindy/experiment.py` now supports task-specific model lists and per-task model context so gated benchmark runs can vary by task without forking the benchmark runner.
 - `scripts/skill_inventory_report.py` and the project-local maintenance skills under `.agents/skills/project/` support ongoing repository upkeep, including diff summarization, README syncing, safer GitHub publishing, repo-aware vibe coding, and human-gated parallel workflow planning before execution.
+- `dynamics-literature-factor-updater` now gives the repo a reusable workflow for mining factor ideas from primary dynamics papers or canonical models and translating them into local fast-slow, RG, and closure-aware factor candidates.
 
 ## Fast-Slow Validation Entry Point
 
@@ -422,9 +424,20 @@ python scripts/run_fastslow_validation.py --suite fastslow_smoke --out_dir runs/
 This entrypoint adds:
 
 - curated `fastslow_smoke` and `fastslow_theory` suites
+- mechanism-isolation suites for `fastslow_gating_sweep`, `fastslow_observability_sweep`, `fastslow_hetero_sweep`, and the combined `fastslow_mechanism_sweeps`
 - a `theory_fastslow` coordinate family for Markov / spectral / Koopman checks
 - theory-oriented factor presets such as `slow_manifold_alignment`, `adiabatic_coherence`, `slow_level_norm`, and `closure_stress`
-- compact outputs in `fastslow_validation_report.md` and `fastslow_validation_summary.json`
+- compact outputs in `fastslow_validation_report.md`, `fastslow_mechanism_report.md`, and `fastslow_validation_summary.json`
+
+Mechanism-sweep examples:
+
+```bash
+python scripts/run_fastslow_validation.py --suite fastslow_gating_sweep --out_dir runs/fastslow_validation/fastslow_gating_sweep --grid_mode quick --identifier_kinds sindy_slow
+python scripts/run_fastslow_validation.py --suite fastslow_observability_sweep --out_dir runs/fastslow_validation/fastslow_observability_sweep --grid_mode quick --identifier_kinds sindy_slow
+python scripts/run_fastslow_validation.py --suite fastslow_hetero_sweep --out_dir runs/fastslow_validation/fastslow_hetero_sweep_accumulate --grid_mode quick --identifier_kinds sindy_slow --mining_mode accumulate
+```
+
+The heteroscedasticity control sometimes needs `--mining_mode accumulate` when you want an ungated fast/slow-vs-raw benchmark, because `identify` mode may suppress fast/slow validation once the coordinate gate decides the hypothesis is not justified.
 
 ## Notebook Demo Update
 
@@ -432,3 +445,14 @@ This entrypoint adds:
 - `notebooks/sf/classic_sparse_sf_demo.ipynb` is the one-click review notebook for classic noisy and sparse-observation slow-fast validation.
 - Notebook reruns should write to `runs/demo_notebook/sf/<scope>/`, so cached review artifacts stay grouped by family.
 - `requirements.txt` now includes `matplotlib` because expert-facing review notebooks depend on plots.
+
+## GA-EPR Prior Integration
+
+The repository now has a pure-numpy WSGA / EPR prior path that is meant to support the question “does this coordinate preserve attractor-local geometry, basin structure, and an EPR-style quasi-potential residual?” without introducing a separate GA-EPR neural network stack.
+
+What is integrated:
+
+- `src/fsrc_sindy/attractor_prior.py` implements WSGA-style fixed-point discovery and Gaussian basin priors.
+- `scripts/run_coordinate_analysis.py --wsga_prior` can score coordinates with attractor-aware metrics such as `wsga_epr_score` and `wsga_basin_sep_gap`.
+- `scripts/run_factor_mining.py --wsga_prior` can optionally use the same score inside factor screening.
+- `gaepr_smoke` adds a multistable `bistable` experiment surface for running these checks with the existing project workflow.

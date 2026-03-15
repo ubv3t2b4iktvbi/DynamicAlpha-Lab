@@ -6,9 +6,10 @@ from typing import Sequence
 import pandas as pd
 from tqdm.auto import tqdm
 
+from ..attractor_prior import WSGAConfig, assign_attractor_labels, build_task_attractor_prior
 from ..benchmarks import build_suite
 from ..models.rc import RCConfig, ReservoirTemplateFactory
-from ..systems import split_series, simulate_task
+from ..systems import split_series, simulate_task, task_metadata_columns
 from ..utils import ensure_dir, set_seed
 from ..factors.archive import save_run_artifacts
 from ..factors.base import DynamicsFeatureConfig, FactorMiningConfig
@@ -67,6 +68,25 @@ def run_factor_mining_suite(
         sim = simulate_task(task, seed=seed)
         split = split_series(sim.obs, n_train=task.n_train, n_val=task.n_val, n_test=task.n_test)
         y_train, y_val, y_test = split["train"], split["val"], split["test"]
+        attractor_prior = None
+        attractor_labels = None
+        if mining_cfg.use_wsga_prior:
+            try:
+                attractor_prior = build_task_attractor_prior(
+                    task,
+                    seed=seed,
+                    config=WSGAConfig(
+                        noise_strength=mining_cfg.wsga_noise_strength,
+                        dt=mining_cfg.wsga_dt,
+                        steps=mining_cfg.wsga_steps,
+                        rand_num=mining_cfg.wsga_rand_num,
+                    ),
+                    reference_states=sim.states,
+                )
+                attractor_labels = assign_attractor_labels(sim.states[: task.n_train + task.n_val], attractor_prior)
+            except ValueError:
+                attractor_prior = None
+                attractor_labels = None
         task_dir = out_path / task.name
         ensure_dir(task_dir)
         for identifier_kind in mining_cfg.identifier_kinds:
@@ -76,6 +96,9 @@ def run_factor_mining_suite(
                 y_val=y_val,
                 y_test=y_test,
                 identifier_kind=identifier_kind,
+                attractor_prior=attractor_prior,
+                attractor_labels=attractor_labels,
+                dt=task.dt,
             )
             run_dir = task_dir / identifier_kind
             save_run_artifacts(run_dir, result, translation_table_markdown=translation_text)
@@ -90,6 +113,7 @@ def run_factor_mining_suite(
                     "dt": task.dt,
                 }
             )
+            row.update(task_metadata_columns(task))
             rows.append(row)
         translation_doc = task_dir / "finance_to_dynamics_translation.md"
         if not translation_doc.exists():
@@ -107,7 +131,8 @@ def run_factor_mining_suite(
         best = df.sort_values("validation_score").groupby("task").first().reset_index()
         lines.append("## Best identifier per task")
         lines.append("")
-        lines.append(best[["task", "identifier_kind", "selected_factors", "final_rmse50", "test_rmse50"]].to_markdown(index=False))
+        best_cols = [c for c in ["task", "identifier_kind", "selected_factors", "validation_score", "rollout_validation_score", "final_rmse50", "test_rmse50", "selected_wsga_epr_score"] if c in best.columns]
+        lines.append(best[best_cols].to_markdown(index=False))
     else:
         lines.append("No runs were generated.")
     summary_md.write_text("\n".join(lines), encoding="utf-8")

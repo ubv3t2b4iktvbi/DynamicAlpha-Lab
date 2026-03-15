@@ -8,7 +8,7 @@ import numpy as np
 
 from ..factors.base import DynamicsFeatureConfig, FactorSpec
 from ..factors.readout import CausalFactorReadout, ReadoutState
-from ..factors.repository import fastslow_readout_specs
+from ..factors.repository import fastslow_readout_specs, sparse_rg_gate_specs
 from ..fastslow import CausalFastSlowEncoder, FastSlowConfig
 from ..library import build_poly_library
 from ..metrics import metric_dict
@@ -181,6 +181,271 @@ class PureNGRCModel(BaseForecastModel):
             preds.append(pred_std * self.std_ + self.mu_)
             truth.append(ys[t + 1] * self.std_ + self.mu_)
         return {f'one_step_{k}': v for k, v in metric_dict(np.asarray(truth), np.asarray(preds)).items()}
+
+    def count_total_params(self) -> int:
+        return int(self.n_features_)
+
+    def count_trained_params(self) -> int:
+        return int(self.n_features_)
+
+    def effective_dim(self) -> int:
+        return int(self.n_features_)
+
+
+def _takens_delay_summaries(delay_rows: np.ndarray) -> np.ndarray:
+    delay_rows = np.asarray(delay_rows, dtype=float)
+    if delay_rows.ndim == 1:
+        delay_rows = delay_rows.reshape(1, -1)
+    mean = np.mean(delay_rows, axis=1, keepdims=True)
+    centered = delay_rows - mean
+    variance = np.mean(centered ** 2, axis=1, keepdims=True)
+    if delay_rows.shape[1] >= 2:
+        tangent = (delay_rows[:, 0] - delay_rows[:, 1]).reshape(-1, 1)
+    else:
+        tangent = np.zeros((delay_rows.shape[0], 1), dtype=float)
+    if delay_rows.shape[1] >= 3:
+        curvature = (delay_rows[:, 0] - 2.0 * delay_rows[:, 1] + delay_rows[:, 2]).reshape(-1, 1)
+    else:
+        curvature = np.zeros((delay_rows.shape[0], 1), dtype=float)
+    return np.hstack([mean, tangent, curvature, variance])
+
+
+class TakensRGResidualNGRCModel(BaseForecastModel):
+    """Delay-backbone NGRC plus a sparse RG-conditioned residual correction."""
+
+    def __init__(
+        self,
+        cfg: NGRCConfig,
+        fs_cfg: Optional[FastSlowConfig] = None,
+        readout_factor_specs: Sequence[FactorSpec] | None = None,
+        readout_identifier_kind: str | None = None,
+        readout_feature_cfg: DynamicsFeatureConfig | None = None,
+        correction_mode: str = "interaction",
+        rg_control_mode: str = "none",
+        rg_lag: int = 1,
+        random_feature_seed: int = 0,
+    ):
+        self.cfg = cfg
+        self.fs_cfg = fs_cfg if fs_cfg is not None else (cfg.fs_cfg if cfg.fs_cfg is not None else FastSlowConfig(t0=4, slow_scales=(8, 16, 32)))
+        factor_specs = list(readout_factor_specs) if readout_factor_specs is not None else sparse_rg_gate_specs()
+        self.readout = CausalFactorReadout(
+            factor_specs=factor_specs,
+            feature_cfg=readout_feature_cfg,
+            identifier_kind=readout_identifier_kind,
+            fastslow_cfg=self.fs_cfg,
+        )
+        self.delay = _DelayBuilder(cfg.n_delays, cfg.stride)
+        self.correction_mode = str(correction_mode).strip().lower() or "interaction"
+        self.rg_control_mode = str(rg_control_mode).strip().lower() or "none"
+        self.rg_lag = max(1, int(rg_lag))
+        self.random_feature_seed = int(random_feature_seed)
+        if self.correction_mode not in {"interaction", "additive"}:
+            raise ValueError(f"Unsupported correction_mode={correction_mode}")
+        if self.rg_control_mode not in {"none", "lagged_rg", "random_summary"}:
+            raise ValueError(f"Unsupported rg_control_mode={rg_control_mode}")
+
+        self.mu_ = 0.0
+        self.std_ = 1.0
+        self.base_coef_: Optional[np.ndarray] = None
+        self.corr_coef_: Optional[np.ndarray] = None
+        self.base_dim_: int = 0
+        self.corr_dim_: int = 0
+        self.n_features_: int = 0
+        self.summary_mu_ = np.zeros(4, dtype=float)
+        self.summary_std_ = np.ones(4, dtype=float)
+        self.random_W_: Optional[np.ndarray] = None
+        self.random_b_: Optional[np.ndarray] = None
+
+    def _standardize(self, y: np.ndarray) -> np.ndarray:
+        return ((np.asarray(y, dtype=float).reshape(-1) - self.mu_) / self.std_).astype(float)
+
+    def _delay_basis(self, delay_rows: np.ndarray) -> np.ndarray:
+        delay_rows = np.asarray(safe_clip(delay_rows, self.cfg.feature_clip), dtype=float)
+        Phi, _ = build_poly_library(delay_rows, [f"z{i}" for i in range(delay_rows.shape[1])], poly_order=self.cfg.poly_order)
+        return np.asarray(safe_clip(Phi, self.cfg.feature_clip), dtype=float)
+
+    def _random_control_rows(self, delay_rows: np.ndarray, fit: bool) -> np.ndarray:
+        delay_rows = np.asarray(delay_rows, dtype=float)
+        if delay_rows.ndim == 1:
+            delay_rows = delay_rows.reshape(1, -1)
+        if self.readout.dim <= 0:
+            return np.zeros((delay_rows.shape[0], 0), dtype=float)
+        summaries = _takens_delay_summaries(delay_rows)
+        if fit or self.random_W_ is None or self.random_b_ is None:
+            self.summary_mu_ = np.mean(summaries, axis=0)
+            self.summary_std_ = np.std(summaries, axis=0) + 1e-8
+            rng = np.random.default_rng(self.random_feature_seed)
+            self.random_W_ = rng.normal(
+                loc=0.0,
+                scale=1.0 / np.sqrt(max(1, summaries.shape[1])),
+                size=(summaries.shape[1], self.readout.dim),
+            )
+            self.random_b_ = rng.normal(loc=0.0, scale=0.1, size=self.readout.dim)
+        normed = (summaries - self.summary_mu_) / self.summary_std_
+        proj = normed @ self.random_W_ + self.random_b_
+        return np.asarray(np.tanh(proj), dtype=float)
+
+    def _control_rows_from_matrix(
+        self,
+        delay_rows: np.ndarray,
+        factor_mat: Optional[np.ndarray],
+        indices: Sequence[int],
+        fit: bool,
+    ) -> np.ndarray:
+        if self.readout.dim <= 0:
+            return np.zeros((len(indices), 0), dtype=float)
+        if self.rg_control_mode == "random_summary":
+            return self._random_control_rows(delay_rows, fit=fit)
+        raw = np.asarray(factor_mat, dtype=float) if factor_mat is not None else np.zeros((0, self.readout.dim), dtype=float)
+        rows: list[np.ndarray] = []
+        for t in indices:
+            src = int(t)
+            if self.rg_control_mode == "lagged_rg":
+                src = max(0, src - self.rg_lag)
+            if raw.shape[0] == 0:
+                rows.append(np.zeros(self.readout.dim, dtype=float))
+            else:
+                src = min(src, raw.shape[0] - 1)
+                rows.append(np.asarray(raw[src], dtype=float))
+        return np.vstack(rows) if rows else np.zeros((0, self.readout.dim), dtype=float)
+
+    def _correction_basis(self, delay_rows: np.ndarray, control_rows: np.ndarray) -> np.ndarray:
+        control_rows = np.asarray(control_rows, dtype=float)
+        if control_rows.ndim == 1:
+            control_rows = control_rows.reshape(1, -1)
+        if control_rows.size == 0 or control_rows.shape[1] == 0:
+            return np.zeros((control_rows.shape[0], 0), dtype=float)
+        if self.correction_mode == "additive":
+            return np.asarray(safe_clip(control_rows, self.cfg.feature_clip), dtype=float)
+        summaries = _takens_delay_summaries(delay_rows)
+        cols = [control_rows]
+        for idx in range(summaries.shape[1]):
+            cols.append(summaries[:, idx:idx + 1] * control_rows)
+        corr = np.hstack(cols)
+        return np.asarray(safe_clip(corr, self.cfg.feature_clip), dtype=float)
+
+    def _feature_blocks(
+        self,
+        delay_row: np.ndarray,
+        readout_state: Optional[ReadoutState] = None,
+        factor_mat: Optional[np.ndarray] = None,
+        t: Optional[int] = None,
+        rg_queue: deque[np.ndarray] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        delay_arr = np.asarray(delay_row, dtype=float).reshape(1, -1)
+        base = self._delay_basis(delay_arr).reshape(-1)
+        if self.readout.dim > 0:
+            if factor_mat is not None and t is not None:
+                control = self._control_rows_from_matrix(delay_arr, factor_mat=factor_mat, indices=[int(t)], fit=False)
+            elif self.rg_control_mode == "random_summary":
+                control = self._random_control_rows(delay_arr, fit=False)
+            elif readout_state is not None:
+                if self.rg_control_mode == "lagged_rg":
+                    if rg_queue is None or not rg_queue:
+                        raise ValueError("lagged_rg control requires an initialized RG queue during rollout")
+                    control = np.asarray(rg_queue[0], dtype=float).reshape(1, -1)
+                else:
+                    control = np.asarray(self.readout.factor_step(readout_state.context), dtype=float).reshape(1, -1)
+            else:
+                raise ValueError("factor readout requested but no RG state provided")
+            corr = self._correction_basis(delay_arr, control).reshape(-1)
+        else:
+            corr = np.zeros(0, dtype=float)
+        return base, corr
+
+    def _init_rollout_control_state(self, ys: np.ndarray) -> tuple[Optional[ReadoutState], deque[np.ndarray] | None]:
+        if self.readout.dim <= 0 or self.rg_control_mode == "random_summary":
+            return None, None
+        readout_state = self.readout.warmup(ys)
+        if self.rg_control_mode != "lagged_rg":
+            return readout_state, None
+        _, factor_mat = self.readout.transform(ys)
+        queue = deque(maxlen=self.rg_lag + 1)
+        if factor_mat is None or factor_mat.shape[1] == 0:
+            for _ in range(self.rg_lag + 1):
+                queue.append(np.zeros(self.readout.dim, dtype=float))
+            return readout_state, queue
+        start = max(0, factor_mat.shape[0] - (self.rg_lag + 1))
+        init_rows = [np.asarray(row, dtype=float) for row in factor_mat[start:]]
+        if not init_rows:
+            init_rows = [np.zeros(self.readout.dim, dtype=float)]
+        while len(init_rows) < self.rg_lag + 1:
+            init_rows.insert(0, init_rows[0].copy())
+        for row in init_rows[-(self.rg_lag + 1):]:
+            queue.append(row)
+        return readout_state, queue
+
+    def fit(self, y_train: np.ndarray) -> "TakensRGResidualNGRCModel":
+        self.mu_ = float(np.mean(y_train))
+        self.std_ = float(np.std(y_train) + 1e-12)
+        ys = self._standardize(y_train)
+        _, factor_mat = self.readout.fit_transform(ys)
+        start = max(self.cfg.washout, self.delay.max_lag)
+        delay_rows = []
+        deltas = []
+        indices = []
+        for t in range(start, len(ys) - 1):
+            delay_rows.append(self.delay.row_from_series(ys, t))
+            deltas.append(float(ys[t + 1] - ys[t]))
+            indices.append(int(t))
+        if not delay_rows:
+            raise ValueError("Not enough data for Takens RG residual NGRC design matrix")
+        delay_block = np.vstack(delay_rows)
+        delta_target = np.asarray(deltas, dtype=float)
+        Phi = self._delay_basis(delay_block)
+        self.base_coef_ = ridge_solve(Phi, delta_target, self.cfg.ridge)
+        self.base_dim_ = int(Phi.shape[1])
+        resid = delta_target - Phi @ self.base_coef_
+        if self.readout.dim > 0:
+            control_block = self._control_rows_from_matrix(delay_block, factor_mat=factor_mat, indices=indices, fit=True)
+            Corr = self._correction_basis(delay_block, control_block)
+            self.corr_coef_ = ridge_solve(Corr, resid, self.cfg.ridge)
+            self.corr_dim_ = int(Corr.shape[1])
+        else:
+            self.corr_coef_ = np.zeros(0, dtype=float)
+            self.corr_dim_ = 0
+        self.n_features_ = int(self.base_dim_ + self.corr_dim_)
+        return self
+
+    def rollout(self, y_hist: np.ndarray, horizon: int) -> np.ndarray:
+        ys = self._standardize(y_hist)
+        if len(ys) <= self.delay.max_lag:
+            raise ValueError("history too short for Takens RG residual NGRC rollout")
+        hist = deque([float(v) for v in ys], maxlen=max(len(ys), self.delay.max_lag + 1))
+        readout_state, rg_queue = self._init_rollout_control_state(ys)
+        preds = []
+        for _ in range(horizon):
+            delay_row = self.delay.row_from_deque(hist)
+            base, corr = self._feature_blocks(delay_row, readout_state=readout_state, rg_queue=rg_queue)
+            delta = float(base @ self.base_coef_)
+            if corr.size > 0:
+                delta += float(corr @ self.corr_coef_)
+            delta = float(safe_clip(delta, self.cfg.y_clip))
+            y_next = float(safe_clip(hist[-1] + delta, self.cfg.y_clip))
+            preds.append(y_next)
+            hist.append(y_next)
+            if readout_state is not None:
+                self.readout.advance(readout_state, y_next)
+                if self.rg_control_mode == "lagged_rg":
+                    rg_queue.append(np.asarray(self.readout.factor_step(readout_state.context), dtype=float))
+        return np.asarray(preds, dtype=float) * self.std_ + self.mu_
+
+    def one_step_metrics(self, series: np.ndarray, burn_in: int):
+        ys = self._standardize(series)
+        _, factor_mat = self.readout.transform(ys)
+        start = max(int(burn_in), self.cfg.washout, self.delay.max_lag)
+        preds, truth = [], []
+        for t in range(start, len(ys) - 1):
+            delay_row = self.delay.row_from_series(ys, t)
+            base, corr = self._feature_blocks(delay_row, factor_mat=factor_mat, t=t)
+            delta = float(base @ self.base_coef_)
+            if corr.size > 0:
+                delta += float(corr @ self.corr_coef_)
+            delta = float(safe_clip(delta, self.cfg.y_clip))
+            pred_std = float(safe_clip(ys[t] + delta, self.cfg.y_clip))
+            preds.append(pred_std * self.std_ + self.mu_)
+            truth.append(ys[t + 1] * self.std_ + self.mu_)
+        return {f"one_step_{k}": v for k, v in metric_dict(np.asarray(truth), np.asarray(preds)).items()}
 
     def count_total_params(self) -> int:
         return int(self.n_features_)

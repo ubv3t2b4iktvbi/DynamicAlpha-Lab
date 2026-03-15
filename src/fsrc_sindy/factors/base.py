@@ -30,6 +30,9 @@ class FactorSpec:
     dynamics_meaning: str = ""
     theory_tags: tuple[str, ...] = field(default_factory=tuple)
     complexity: int = 1
+    source: str = "builtin"
+    default_tier: str = "extended"
+    manifold_role: str = "generic"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -53,7 +56,21 @@ class CandidateScore:
     formula: str = ""
     finance_origin: str = ""
     dynamics_meaning: str = ""
+    wsga_epr_loss: float = float("nan")
+    wsga_epr_score: float = float("nan")
+    wsga_basin_sep_gap: float = float("nan")
     theory_tags: tuple[str, ...] = field(default_factory=tuple)
+    source: str = "builtin"
+    default_tier: str = "extended"
+    manifold_role: str = "generic"
+    target_corr: float = float("nan")
+    target_mutual_info: float = float("nan")
+    max_redundancy_corr: float = float("nan")
+    max_redundancy_mutual_info: float = float("nan")
+    novelty_score: float = float("nan")
+    effectiveness_score: float = float("nan")
+    curation_score: float = float("nan")
+    curation_tier: str = "extended"
     notes: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -71,6 +88,14 @@ class SelectedFactorLibrary:
     final_rmse50: float
     final_rmse10: float
     validation_score: float
+    rollout_validation_score: float = float("nan")
+    baseline_wsga_epr_score: float = float("nan")
+    final_wsga_epr_score: float = float("nan")
+    baseline_wsga_epr_loss: float = float("nan")
+    final_wsga_epr_loss: float = float("nan")
+    library_layers: dict[str, list[str]] = field(default_factory=dict)
+    future_factor_queue: list[str] = field(default_factory=list)
+    curation_notes: str = ""
     notes: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,6 +107,14 @@ class SelectedFactorLibrary:
             "final_rmse50": self.final_rmse50,
             "final_rmse10": self.final_rmse10,
             "validation_score": self.validation_score,
+            "rollout_validation_score": self.rollout_validation_score,
+            "baseline_wsga_epr_score": self.baseline_wsga_epr_score,
+            "final_wsga_epr_score": self.final_wsga_epr_score,
+            "baseline_wsga_epr_loss": self.baseline_wsga_epr_loss,
+            "final_wsga_epr_loss": self.final_wsga_epr_loss,
+            "library_layers": self.library_layers,
+            "future_factor_queue": self.future_factor_queue,
+            "curation_notes": self.curation_notes,
             "notes": self.notes,
         }
 
@@ -93,6 +126,7 @@ class FactorMiningConfig:
     screening_ridge: float = 1e-5
     property_weight_strength: float = 0.2
     koopman_weight_strength: float = 0.15
+    epr_weight_strength: float = 0.0
     property_prescreen_top_k: int = 16
     full_library_search: bool = True
     screen_top_m: int = 12
@@ -103,6 +137,11 @@ class FactorMiningConfig:
     random_seed: int = 123
     include_pairwise_mutations: bool = True
     max_pairwise_mutations: int = 12
+    use_wsga_prior: bool = False
+    wsga_noise_strength: float = 0.01
+    wsga_dt: float = 0.01
+    wsga_steps: int = 2000
+    wsga_rand_num: int = 128
 
 
 @dataclass

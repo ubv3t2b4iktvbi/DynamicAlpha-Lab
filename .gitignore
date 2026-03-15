@@ -16,6 +16,11 @@ data/factorlib/selected/
 # Local notebooks / scratch
 .ipynb_checkpoints/
 
+# Private local-only content
+finance/
+gaepr/
+gnlse_rg_multilink_cp/
+
 # Editors
 .DS_Store
 .vscode/

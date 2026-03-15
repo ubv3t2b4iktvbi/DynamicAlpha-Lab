@@ -19,6 +19,7 @@ class _State:
     energy_long: float
     susceptibility: float
     susceptibility_long: float
+    lag1_cov: float
     positive_impulse: float
     negative_impulse: float
     band_high: float
@@ -91,6 +92,7 @@ class DynamicsFeatureEngine:
             energy_long=0.0,
             susceptibility=0.0,
             susceptibility_long=0.0,
+            lag1_cov=0.0,
             positive_impulse=0.0,
             negative_impulse=0.0,
             band_high=y0,
@@ -145,6 +147,8 @@ class DynamicsFeatureEngine:
         slow_manifold_alignment = float(1.0 / (1.0 + abs(resid_norm) + abs(dm_norm)))
         adiabatic_coherence = float(collapse_quality * slow_manifold_alignment)
         closure_stress = float(abs(dm_norm) * energy_ratio / max(collapse_quality, self.cfg.eps))
+        lag1_autocorr = float(np.clip(state.lag1_cov / max(state.energy, self.cfg.eps), -1.0, 1.0))
+        isostable_relaxation = self._relu(-resid_norm * dm_norm)
         total_impulse = float(max(state.positive_impulse + state.negative_impulse, self.cfg.eps))
         positive_impulse_share = float(state.positive_impulse / total_impulse)
         impulse_balance = float((state.positive_impulse - state.negative_impulse) / total_impulse)
@@ -153,6 +157,14 @@ class DynamicsFeatureEngine:
         trend_regression_quality = float(
             collapse_quality / (1.0 + abs(resid_norm) + abs(fast_drift_norm - slow_drift_norm))
         )
+        # RG-style observables separate macro order, control pressure, and fast agitation.
+        rg_order_parameter = slow_level_norm
+        rg_control_parameter = float(energy_ratio * susceptibility_ratio)
+        rg_fast_mode = resid_norm
+        rg_noise_scale = float(abs(resid_norm) + abs(fast_drift_norm - slow_drift_norm))
+        rg_coarse_grain_score = float(collapse_quality * slow_manifold_alignment)
+        rg_beta_flow = float(slow_drift_norm * rg_coarse_grain_score)
+        rg_critical_balance = float(critical_window * rg_control_parameter)
         return {
             "y": y,
             "dy": dy,
@@ -196,10 +208,19 @@ class DynamicsFeatureEngine:
             "slow_manifold_alignment": slow_manifold_alignment,
             "adiabatic_coherence": adiabatic_coherence,
             "closure_stress": closure_stress,
+            "lag1_autocorr": lag1_autocorr,
+            "isostable_relaxation": isostable_relaxation,
             "positive_impulse_share": positive_impulse_share,
             "impulse_balance": impulse_balance,
             "band_position": band_position,
             "trend_regression_quality": trend_regression_quality,
+            "rg_order_parameter": rg_order_parameter,
+            "rg_control_parameter": rg_control_parameter,
+            "rg_fast_mode": rg_fast_mode,
+            "rg_noise_scale": rg_noise_scale,
+            "rg_coarse_grain_score": rg_coarse_grain_score,
+            "rg_beta_flow": rg_beta_flow,
+            "rg_critical_balance": rg_critical_balance,
             "time_index": float(state.time_index),
         }
 
@@ -218,12 +239,14 @@ class DynamicsFeatureEngine:
         slow = float(np.mean(slows))
         resid = float(y_new - slow)
         dy = float(y_new - state.prev_y)
+        prev_dy = float(state.prev_y - state.prev2_y)
         scale = self._ema(state.scale, abs(resid) + self.cfg.eps, self.scale_alpha)
         scale_long = self._ema(state.scale_long, abs(resid) + self.cfg.eps, self.scale_long_alpha)
         energy = self._ema(state.energy, dy * dy, self.energy_alpha)
         energy_long = self._ema(state.energy_long, dy * dy, self.energy_long_alpha)
         positive_impulse = self._ema(state.positive_impulse, self._relu(dy), self.energy_alpha)
         negative_impulse = self._ema(state.negative_impulse, self._relu(-dy), self.energy_alpha)
+        lag1_cov = self._ema(state.lag1_cov, dy * prev_dy, self.energy_alpha)
         band_high = max(y_new, self._ema(state.band_high, y_new, self.fast_alpha))
         band_low = min(y_new, self._ema(state.band_low, y_new, self.fast_alpha))
         m = float(fast - slow)
@@ -246,6 +269,7 @@ class DynamicsFeatureEngine:
         state.energy_long = energy_long
         state.susceptibility = susceptibility
         state.susceptibility_long = susceptibility_long
+        state.lag1_cov = lag1_cov
         state.positive_impulse = positive_impulse
         state.negative_impulse = negative_impulse
         state.band_high = band_high

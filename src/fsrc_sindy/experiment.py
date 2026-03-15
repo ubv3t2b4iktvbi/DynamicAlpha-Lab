@@ -9,12 +9,34 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from .benchmarks import build_suite
+from .factors.repository import (
+    fastslow_readout_specs,
+    rg_readout_specs,
+    sparse_rg_gate_specs,
+    sf_rg_gated_readout_specs,
+    sf_rg_interaction_readout_specs,
+)
 from .metrics import evaluate_distribution, evaluate_horizons
 from .models import ReservoirTemplateFactory
 from .selection import DEFAULT_MODEL_NAMES, get_model_spec, instantiate_model, select_best_model
-from .systems import BenchmarkTask, simulate_task, split_series
+from .systems import BenchmarkTask, simulate_task, split_series, task_metadata_columns
 from .tracking import ProgressTracker
 from .utils import ensure_dir, set_seed, to_jsonable
+
+
+PRESET_READOUT_FACTORIES = {
+    "rc_fastslow_readout": fastslow_readout_specs,
+    "ngrc_fastslow_readout": fastslow_readout_specs,
+    "hybrid_rc_ngrc_fastslow": fastslow_readout_specs,
+    "rc_rg_readout": rg_readout_specs,
+    "ngrc_rg_readout": rg_readout_specs,
+    "hybrid_rc_ngrc_rg": rg_readout_specs,
+    "ngrc_takens_rg_residual": sparse_rg_gate_specs,
+    "rc_sf_rg_gated": sf_rg_gated_readout_specs,
+    "ngrc_sf_rg_gated": sf_rg_gated_readout_specs,
+    "rc_sf_rg_interaction": sf_rg_interaction_readout_specs,
+    "ngrc_sf_rg_interaction": sf_rg_interaction_readout_specs,
+}
 
 
 def run_task(
@@ -48,6 +70,8 @@ def run_task(
                     readout_factor_names.append(str(spec.get("name", "")))
                 else:
                     readout_factor_names.append(str(getattr(spec, "name", spec)))
+        elif model_name in PRESET_READOUT_FACTORIES:
+            readout_factor_names = [spec.name for spec in PRESET_READOUT_FACTORIES[model_name]()]
         model_spec = get_model_spec(model_name)
         t0 = time.perf_counter()
         model, val_metrics, best_cfg = select_best_model(
@@ -92,6 +116,10 @@ def run_task(
             'dt': task.dt,
             'process_noise_std': task.process_noise_std,
             'obs_noise_std': task.obs_noise_std,
+            'process_noise_volatility': task.process_noise_volatility,
+            'obs_noise_volatility': task.obs_noise_volatility,
+            'noise_ema_span': task.noise_ema_span,
+            'match_obs_noise_energy': int(task.match_obs_noise_energy),
             'obs_mode': task.obs_mode,
             'obs_params': to_jsonable(task.obs_params),
             'selection_horizons': list(task.selection_horizons),
@@ -108,6 +136,7 @@ def run_task(
             'readout_factor_count': len(readout_factor_names),
             'readout_factor_names': "; ".join(name for name in readout_factor_names if name),
         }
+        row.update(task_metadata_columns(task))
         row.update(val_metrics)
         row.update(one_metrics)
         row.update(roll_metrics)
@@ -159,3 +188,137 @@ def run_benchmark_suite(
         all_rows.append(df_task)
     result_df = pd.concat(all_rows, axis=0, ignore_index=True) if all_rows else pd.DataFrame()
     return result_df
+
+
+def _flatten_multiindex_columns(columns: pd.Index) -> list[str]:
+    out: list[str] = []
+    for col in columns:
+        if isinstance(col, tuple):
+            head, tail = col
+            out.append(str(head) if not tail else f"{head}_{tail}")
+        else:
+            out.append(str(col))
+    return out
+
+
+def _render_benchmark_seed_summary(summary_df: pd.DataFrame) -> str:
+    if summary_df.empty:
+        return "# Benchmark Seed Summary\n\nNo rows were produced.\n"
+    preferred = [
+        "task",
+        "variant",
+        "seed_count",
+        "rmse@50_mean",
+        "rmse@50_std",
+        "rmse@100_mean",
+        "rmse@100_std",
+        "acf_rmse_mean",
+        "acf_rmse_std",
+        "psd_rmse_mean",
+        "psd_rmse_std",
+    ]
+    cols = [c for c in preferred if c in summary_df.columns]
+    return "\n".join(
+        [
+            "# Benchmark Seed Summary",
+            "",
+            summary_df[cols].sort_values(["task", "variant"]).to_markdown(index=False),
+            "",
+        ]
+    )
+
+
+def run_benchmark_seed_sweep(
+    suite: str,
+    seeds: Sequence[int],
+    out_dir: str,
+    model_names: Sequence[str] | None = None,
+    task_model_names: dict[str, Sequence[str]] | None = None,
+    task_model_contexts: dict[str, dict[str, dict[str, object]]] | None = None,
+    grid_mode: str = "quick",
+    task_names: Sequence[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    out_path = Path(out_dir)
+    ensure_dir(out_path)
+    all_runs: list[pd.DataFrame] = []
+    for seed in seeds:
+        seed_dir = out_path / f"seed_{seed}"
+        df_seed = run_benchmark_suite(
+            suite=suite,
+            seed=int(seed),
+            out_dir=str(seed_dir),
+            model_names=model_names,
+            task_model_names=task_model_names,
+            task_model_contexts=task_model_contexts,
+            grid_mode=grid_mode,
+            task_names=task_names,
+        ).copy()
+        if not df_seed.empty:
+            df_seed["seed"] = int(seed)
+            all_runs.append(df_seed)
+
+    combined = pd.concat(all_runs, axis=0, ignore_index=True) if all_runs else pd.DataFrame()
+    combined_fp = out_path / "benchmark_seed_results.csv"
+    summary_fp = out_path / "benchmark_seed_summary.csv"
+    summary_md_fp = out_path / "benchmark_seed_summary.md"
+    pivot_fp = out_path / "benchmark_seed_pivot_rmse50_mean.csv"
+    combined.to_csv(combined_fp, index=False)
+
+    if combined.empty:
+        summary = pd.DataFrame()
+    else:
+        group_cols = [
+            c
+            for c in [
+                "task",
+                "system",
+                "task_family",
+                "task_regime",
+                "variant",
+                "base_model_name",
+                "model_family",
+                "sweep_group",
+                "sweep_axis",
+                "sweep_value",
+                "sweep_label",
+                "observability_profile",
+                "noise_profile",
+                "readout_identifier_kind",
+                "readout_factor_count",
+                "readout_factor_names",
+            ]
+            if c in combined.columns
+        ]
+        metric_cols = [
+            c
+            for c in [
+                "one_step_rmse",
+                "rmse@10",
+                "rmse@50",
+                "rmse@100",
+                "acf_rmse",
+                "psd_rmse",
+                "train_time_sec",
+                "rollout_eval_time_sec",
+            ]
+            if c in combined.columns
+        ]
+        summary = (
+            combined.groupby(group_cols, dropna=False)[metric_cols]
+            .agg(["mean", "std", "min", "max"])
+            .reset_index()
+        )
+        summary.columns = _flatten_multiindex_columns(summary.columns)
+        seed_counts = (
+            combined.groupby(group_cols, dropna=False)["seed"]
+            .nunique()
+            .reset_index(name="seed_count")
+        )
+        summary = seed_counts.merge(summary, on=group_cols, how="left")
+        summary = summary.sort_values(["task", "variant"]).reset_index(drop=True)
+        if "rmse@50_mean" in summary.columns:
+            pivot = summary.pivot_table(index="task", columns="variant", values="rmse@50_mean", aggfunc="first")
+            pivot.to_csv(pivot_fp)
+    summary.to_csv(summary_fp, index=False)
+    summary_md_fp.write_text(_render_benchmark_seed_summary(summary), encoding="utf-8")
+    return combined, summary
